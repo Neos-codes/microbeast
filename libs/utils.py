@@ -5,14 +5,26 @@ import numpy as np
 from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 
+# ----- Aliases
+# Un Buffer será un diccionario con keys string y claves list(Tensor)
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
+
+# ----- Functions
+# - create_buffers()
+# - create_env
+
+
+# ----- Functions ----- #
+
 # T = unroll_length    n_envs: num of envs in a gym-microRTS execution 
-def create_buffers(n_buffers: int, n_envs: int, T: int, obs_size: tuple):
+def create_buffers(n_buffers: int, n_envs: int, T: int, obs_size: tuple) -> Buffers:
+    """Creates \"n_buffers\" buffers that share memory between processes"""
+
     print("Creando buffers...")
     h = w = obs_size[0]
     specs = dict(
-        frame=dict(size=(T + 1, n_envs, *obs_size), dtype=torch.float32), # frame es equivalente a obs
+        obs=dict(size=(T + 1, n_envs, *obs_size), dtype=torch.float32),
         reward=dict(size=(T + 1, n_envs), dtype=torch.float32),
         done=dict(size=(T + 1, n_envs), dtype=torch.bool),
         episode_return=dict(size=(T + 1, n_envs), dtype=torch.float32),
@@ -32,7 +44,8 @@ def create_buffers(n_buffers: int, n_envs: int, T: int, obs_size: tuple):
             buffers[key].append(torch.empty(**specs[key]).share_memory_())
     return buffers
 
-def create_env(size: int, n_envs: int, max_steps: int):
+def create_env(size: int, n_envs: int, max_steps: int) -> MicroRTSGridModeVecEnv:
+    """ Returns a gym-MicroRTS env of (size x size) and \"n_envs\" bots simultaneously"""
     print("Creando ambiente gym-MicroRTS...")
     envs = MicroRTSGridModeVecEnv(
             num_selfplay_envs=0,

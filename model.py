@@ -132,7 +132,7 @@ class Agent(nn.Module):
     # Lo de agent state es para satisfacer MicroBeast (MonoBeast)
     def forward(self, input_dict: dict, agent_state):
         #print("--- FRAME SIZE ---\n", x["frame"][0, 0, ...].size(), "\n------\n", type(x["frame"][0, 0, ...]))
-        return self.network(input_dict["frame"][0, 0, ...].permute((0, 3, 1, 2)))
+        return self.network(input_dict["obs"][0, 0, ...].permute((0, 3, 1, 2)))
 
     # Get action ahora recibe un diccionario en lugar de solo las observaciones!
     def get_action(self, input_dict: dict, action=None, action_masks=None, agent_state=()):

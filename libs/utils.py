@@ -27,8 +27,8 @@ def create_buffers(n_buffers: int, n_envs: int, T: int, obs_size: tuple) -> Buff
         obs=dict(size=(T + 1, n_envs, *obs_size), dtype=torch.float32),
         reward=dict(size=(T + 1, n_envs), dtype=torch.float32),
         done=dict(size=(T + 1, n_envs), dtype=torch.bool),
-        episode_return=dict(size=(T + 1, n_envs), dtype=torch.float32),
-        episode_step=dict(size=(T + 1,), dtype=torch.int32),
+        ep_return=dict(size=(T + 1, n_envs), dtype=torch.float32),
+        ep_step=dict(size=(T + 1, 1), dtype=torch.int32),
         policy_logits=dict(size=(T + 1, n_envs, h*w*78), dtype=torch.float32),
         baseline=dict(size=(T + 1, n_envs), dtype=torch.float32),          # baseline es V(s)
         last_action=dict(size=(T + 1, n_envs, h*w*7), dtype=torch.int64),

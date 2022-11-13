@@ -1,3 +1,4 @@
+from time import sleep
 import numpy as np
 import multiprocessing as mp
 import torch
@@ -21,10 +22,41 @@ from env_packer import Env_Packer
 # Un Buffer será un diccionario con keys string y claves list(Tensor)
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
-def act(model: Agent, buffers: Buffers, num: int):
+def act(agent: Agent,
+        buffers: Buffers,
+        num: int,
+        free_queue :mp.SimpleQueue,
+        full_queue :mp.SimpleQueue,
+        ):
+
     print(f"Hola! Soy el actor {num}")
     gym_envs = create_env(8, 2, 512)
     envs = Env_Packer(gym_envs)
+    env_output = envs.initial()
+    agent_output = agent.get_action(env_output)
+     
+
+    # Actuar indefinidamente en el ambiente
+    while True:
+        
+        index = free_queue.get() 
+        print(f"index in actor {num}: {index}")
+
+
+        # ----- Guardar condiciones iniciales en el buffer ----- #
+        # Del ambiente
+        for key in env_output:
+            # Posicion 0 de la trayectoria en el buffer
+            buffers[key][index][0, ...] = env_output[key]
+        # Del agente
+        for key in agent_output[0]:
+            buffers[key][index][0, ...] = agent_output[0][key]
+        
+        sleep(5)
+        if free_queue.empty():
+            break
+    
+
 
 def train():
     print("Training...")
@@ -43,11 +75,9 @@ def train():
     nvec = micro_env.action_space.nvec.tolist()
     micro_model = Agent(micro_env.observation_space.shape, nvec, 8*8)
     micro_model.share_memory()
-    print(f"Model id in main process: {id(micro_model)}")
 
     # Crear buffer
     buffers = create_buffers(n_buffers, n_envs, T, micro_env.observation_space.shape)
-    print(f"Buffers id in main process: {id(buffers)}")
 
     # Desde ahora, micro_env solo sirve para constructor del Learner
 
@@ -58,12 +88,17 @@ def train():
     free_queue = ctx.SimpleQueue()
     full_queue = ctx.SimpleQueue()
 
+    # ----- Llenar la free queue con los indices ----- #
+    for index in range(n_buffers):
+        free_queue.put(index)   # Indices de las trayectoras para backprop
+
+
     # ----- Crear subprocesos (Actores) ----- #
     actor_processes = []
     for i in range(n_actors):
         actor = ctx.Process(
                     target=act,
-                    args=(micro_model, buffers, i)
+                    args=(micro_model, buffers, i, free_queue, full_queue)
                 )
         actor.start()
         actor_processes.append(actor)
@@ -75,9 +110,11 @@ def train():
     # ----- Crear Optimizador ----- #
     micro_optimizer = torch.optim.Adam(micro_learner.parameters(), lr=2.5e-4, eps=1e-5)
 
-    # ----- Llenar la free queue con los indices ----- #
-    for index in range(n_buffers):
-        free_queue.put(index)   # Indices de las trayectoras para backprop
+    
+    # Proceso padre no puede terminar antes que los hijos o da error
+    sleep(15)
+    print("Main process awake!")
+
 
 
 def test():

@@ -50,19 +50,22 @@ class Env_Packer:
 
     def step(self, action: torch.Tensor) -> dict:
         """ Step into gym-microRTS environment and packages the frame info for the buffer """
+        print("Step!")
         obs, reward, done, unused_info = self.envs.step(action)
         self.ep_step += 1
         self.ep_return += reward   # OJO AQUI, PUEDE MODIFICARSE PARA PPO
+        print("ep_step type:", type(self.ep_step), self.ep_step.size())
+        print("ep_return type:", type(self.ep_return), "size:", self.ep_return.size())
         ep_step = self.ep_step
         ep_return = self.ep_return
         
         # if done, restart ep_return in that env
-        self.ep_return[0][np.where(done == 1)] = 0
-        self.ep_step[0][np.where(done == 1)] = 0
+        self.ep_return[np.where(done == 1)] = 0
+        self.ep_step[np.where(done == 1)] = 0
 
         obs = _format_obs(obs)
-        reward = torch.Tensor(reward).view(1, n_envs)
-        done = torch.Tensor(done).view(1, n_envs)
+        reward = torch.Tensor(reward).view(1, self.n_envs)
+        done = torch.Tensor(done).view(1, self.n_envs)
 
         ret = dict(
                 obs=obs,

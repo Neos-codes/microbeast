@@ -143,7 +143,7 @@ class Agent(nn.Module):
 
         # La mascara cuando la accion es None, debe tener shape  [num_envs, 4992]
         if action == None:
-            print("Action mask dim:", input_dict["action_mask"][0, ...].shape)
+            #print("Action mask dim:", input_dict["action_mask"][0, ...].shape)
             action_mask = input_dict["action_mask"][0, ...]  # shape (n_envs, 78hw)
 
             split_action_mask = torch.split(action_mask, self.nvec, dim=1)

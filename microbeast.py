@@ -25,15 +25,16 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 def act(agent: Agent,
         buffers: Buffers,
         num: int,
-        free_queue :mp.SimpleQueue,
-        full_queue :mp.SimpleQueue,
+        free_queue: mp.SimpleQueue,
+        full_queue: mp.SimpleQueue,
+        unroll_length: int,
         ):
 
     print(f"Hola! Soy el actor {num}")
     gym_envs = create_env(8, 2, 512)
     envs = Env_Packer(gym_envs)
     env_output = envs.initial()
-    agent_output = agent.get_action(env_output)
+    agent_output, _ = agent.get_action(env_output)
      
 
     # Actuar indefinidamente en el ambiente
@@ -49,13 +50,35 @@ def act(agent: Agent,
             # Posicion 0 de la trayectoria en el buffer
             buffers[key][index][0, ...] = env_output[key]
         # Del agente
-        for key in agent_output[0]:
-            buffers[key][index][0, ...] = agent_output[0][key]
+        for key in agent_output:
+            buffers[key][index][0, ...] = agent_output[key]
         
         sleep(5)
         if free_queue.empty():
-            break
-    
+            print(f"Continue en actor {num}")
+            continue
+
+        for t in range(unroll_length):
+            # Generar accion del agente
+            with torch.no_grad():
+                agent_output, _ = agent.get_action(env_output, agent_state=())
+
+            # Guardar step en el buffer 
+            for key in env_output:
+                buffers[key][index][t + 1, ...] = env_output[key]
+            # Del agente
+            for key in agent_output:
+                buffers[key][index][t + 1 , ...] = agent_output[key]
+            
+            env_output = envs.step(agent_output["action"])
+
+        # Una vez llena la trayectoria, pasar a full queue
+        full_queue.put(index)
+        # Para experimentar vuelvo a pasarlo a la free_queue
+        number = full_queue.get()
+        print("Index", number, "liberado")
+        free_queue.put(number)
+                 
 
 
 def train():
@@ -98,7 +121,7 @@ def train():
     for i in range(n_actors):
         actor = ctx.Process(
                     target=act,
-                    args=(micro_model, buffers, i, free_queue, full_queue)
+                    args=(micro_model, buffers, i, free_queue, full_queue, T)
                 )
         actor.start()
         actor_processes.append(actor)
@@ -112,10 +135,9 @@ def train():
 
     
     # Proceso padre no puede terminar antes que los hijos o da error
-    sleep(15)
+    sleep(1000)
     print("Main process awake!")
-
-
+   
 
 def test():
     print("Testing...")

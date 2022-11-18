@@ -13,9 +13,13 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
 
 # ----- Functions
-# - create_buffers()
-# - create_env
-# - get_batch
+# - create_buffers(): Creates {n_buffer} buffers that share memory between processes
+
+# - create_env(): Returns a gym-MicroRTS env of (size x size) and \"n_envs\" bots simultaneously
+
+# - get_batch(): Returns {batch_size} batches taken from the buffer 
+
+# - learn(): Take unroll from batch and makes backpropagation in model
 
 # ----- Functions ----- #
 
@@ -70,8 +74,9 @@ def get_batch(
         full_queue: mp.SimpleQueue,
         buffers: Buffers,
         lock=threading.Lock(),
-        ) -> None:
+        ) -> dict:
 
+    """ Returns {batch_size} batches taken from the buffer """
     # Lock full queue para extraer indices
     with lock:
         indices = [full_queue.get() for _ in range(batch_size)]
@@ -93,3 +98,9 @@ def get_batch(
 
     # Retornar el batch obtenido
     return batch
+
+
+
+# TERMINAR ESTO!
+def learn(actor_model, learner_model, batch, optimizer, scheduler, lock=threading.lock()):
+    pass

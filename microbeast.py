@@ -145,12 +145,31 @@ def train():
     micro_optimizer = torch.optim.Adam(micro_learner.parameters(), lr=2.5e-4, eps=1e-5)
 
     
+
+    # Step se comppartira entre threads, para contar cuantos steps llevamos
+    # hasta alcanzar el maximo y terminar de entrenar
+    step = 0
+    # Definir funcion batch_and_learn()
+    # Es dentro de la funcion para compartir variables globales
+
+    def batch_and_learn(i: int, total_steps: int, lock=threading.lock()):
+        """ Get batches from buffer and backpropagates the info into NN model """
+
+        nonlocal step  # Para referenciar la variable step de train()
+
+        while step < total_steps:
+            
+            # Generar batches
+            batch = get_batch(B, train_device, free_queue, full_queue, buffers)
+
+            
+            # Pasar la info en batch por la red neuronal learner
+            #stats = learn(DEFINIR))
+
     # Proceso padre no puede terminar antes que los hijos o da error
     sleep(30)
     print("Getting batches!")
     batch = get_batch(B, train_device, free_queue, full_queue, buffers)
-    print("Batch keys:", batch.keys())
-    print("Batch values:", batch.values())
     sleep(30)
 
 def test():

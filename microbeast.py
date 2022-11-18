@@ -1,3 +1,4 @@
+import os
 from time import sleep
 import numpy as np
 import multiprocessing as mp
@@ -5,13 +6,13 @@ import torch
 from parser import *
 import typing
 
-from libs.utils import create_buffers, create_env
+from libs.utils import create_buffers, create_env, get_batch
 from model import Agent
 from env_packer import Env_Packer
 
-# TO DO: Funcion Act() donde se crea un Agente nuevo y una NN nueva para entrenar
-#   - Quede en empaquetar un ambiente, falta verificar que funcione el
-#     metodo step
+
+os.environ["OMP_NUM_THREADS"] = "1"  # Para multitrheading
+
 
 
 # NOTA: Si bien los buffers y modelos no tienen el mismo id, comparten
@@ -21,6 +22,9 @@ from env_packer import Env_Packer
 
 # Un Buffer será un diccionario con keys string y claves list(Tensor)
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
+
+
+
 
 def act(agent: Agent,
         buffers: Buffers,
@@ -53,9 +57,10 @@ def act(agent: Agent,
         for key in agent_output:
             buffers[key][index][0, ...] = agent_output[key]
         
+        # Sleep "entre buffers"
         sleep(5)
         if free_queue.empty():
-            print(f"Continue en actor {num}")
+            print(f"Continue por index ocupados en actor {num}")
             continue
 
         for t in range(unroll_length):
@@ -63,21 +68,25 @@ def act(agent: Agent,
             with torch.no_grad():
                 agent_output, _ = agent.get_action(env_output, agent_state=())
 
+            
+            # Step en el ambiente
+            env_output = envs.step(agent_output["action"])
+
+
             # Guardar step en el buffer 
             for key in env_output:
                 buffers[key][index][t + 1, ...] = env_output[key]
+               
             # Del agente
             for key in agent_output:
                 buffers[key][index][t + 1 , ...] = agent_output[key]
-            
-            env_output = envs.step(agent_output["action"])
 
+            
+
+        print("Out of unroll length")
         # Una vez llena la trayectoria, pasar a full queue
         full_queue.put(index)
         # Para experimentar vuelvo a pasarlo a la free_queue
-        number = full_queue.get()
-        print("Index", number, "liberado")
-        free_queue.put(number)
                  
 
 
@@ -90,7 +99,9 @@ def train():
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
     T = 80             # unroll_length
     B = 4              # batch_size 
+    n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
+    train_device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Crear ambiente para obtener shapes
     micro_env = create_env(env_size, n_envs, 512) 
@@ -135,9 +146,12 @@ def train():
 
     
     # Proceso padre no puede terminar antes que los hijos o da error
-    sleep(1000)
-    print("Main process awake!")
-   
+    sleep(30)
+    print("Getting batches!")
+    batch = get_batch(B, train_device, free_queue, full_queue, buffers)
+    print("Batch keys:", batch.keys())
+    print("Batch values:", batch.values())
+    sleep(30)
 
 def test():
     print("Testing...")

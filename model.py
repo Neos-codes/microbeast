@@ -102,7 +102,6 @@ class Agent(nn.Module):
     def __init__(self, obs_space_shape: tuple, nvec: list, mapsize=8*8):
         super(Agent, self).__init__()
         h, w, c = obs_space_shape
-        print(f"{h} {w} {c}")
         _shape = (c, h, w)
         self.mapsize = mapsize
         self.nvec = nvec

@@ -59,6 +59,7 @@ class Env_Packer:
 
         obs = _format_obs(obs)
         reward = torch.Tensor(reward).view(1, self.n_envs)
+        done = done.astype("uint8")
         done = torch.Tensor(done).view(1, self.n_envs)
         action_mask = _format_action_masks(self.envs.get_action_mask().reshape(self.n_envs, -1))
 
@@ -74,6 +75,10 @@ class Env_Packer:
                 )
 
         return ret
+
+    def render(self):
+        """ Render the first env of gym-microRTS instance """
+        self.envs.render()
 
 
     def close(self):

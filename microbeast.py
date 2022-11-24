@@ -2,6 +2,7 @@ import os
 from time import sleep
 import numpy as np
 import multiprocessing as mp
+import threading
 import torch
 from parser import *
 import typing
@@ -43,7 +44,8 @@ def act(agent: Agent,
 
     # Actuar indefinidamente en el ambiente
     while True:
-        
+        # Mostrar tablero
+        envs.render()
         index = free_queue.get() 
         print(f"index in actor {num}: {index}")
 
@@ -64,6 +66,7 @@ def act(agent: Agent,
             continue
 
         for t in range(unroll_length):
+            envs.render()
             # Generar accion del agente
             with torch.no_grad():
                 agent_output, _ = agent.get_action(env_output, agent_state=())
@@ -152,7 +155,7 @@ def train():
     # Definir funcion batch_and_learn()
     # Es dentro de la funcion para compartir variables globales
 
-    def batch_and_learn(i: int, total_steps: int, lock=threading.lock()):
+    def batch_and_learn(i: int, total_steps: int, lock=threading.Lock()):
         """ Get batches from buffer and backpropagates the info into NN model """
 
         nonlocal step  # Para referenciar la variable step de train()
@@ -161,16 +164,19 @@ def train():
             
             # Generar batches
             batch = get_batch(B, train_device, free_queue, full_queue, buffers)
-
-            
+           
             # Pasar la info en batch por la red neuronal learner
             #stats = learn(DEFINIR))
+
+    # END BATCH AND LEARN
 
     # Proceso padre no puede terminar antes que los hijos o da error
     sleep(30)
     print("Getting batches!")
     batch = get_batch(B, train_device, free_queue, full_queue, buffers)
-    sleep(30)
+    print("Unroll size:", batch["reward"][0].size())
+
+
 
 def test():
     print("Testing...")

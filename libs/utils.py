@@ -66,6 +66,30 @@ def create_env(size: int, n_envs: int, max_steps: int) -> MicroRTSGridModeVecEnv
             )
     return envs
 
+def get_advantages(batch: dict, gamma: float) -> dict:
+
+    """ Get a batch and return de advantages for all envs with shape (n_envs, unroll_length) """
+
+    n_envs, unroll_length = batch["reward"].size()
+    advantages = torch.zeros((n_envs, unroll_length))
+
+    # Aliases
+    reward = batch["reward"]
+    value = batch["baseline"]
+    done = batch["done"]
+
+    for t in range(unroll_size - 1):
+        discount = 1
+        advantage_t = 0
+
+        for k in range(t, unroll_length - 1):
+            advantage_t += discount*(reward[:, k:k+1] + gamma*value[:, k+1:k+2] * (1 - done[:, k:k+1]) - value[:, k:k+1])
+            discount *= gamma
+
+        advantages[:, t:t+1] = advantage_t
+    
+    return advantages
+
 
 def get_batch(
         batch_size: int,
@@ -94,13 +118,38 @@ def get_batch(
         free_queue.put(m)
     
     # Pasar tensores del batch al device de entrenamiento
+    # Working
     batch = {k: t.to(device=device, non_blocking=True) for k, t in batch.items()}
+    
+    # reshape para simplificar codigo
+    batch["reward"] = batch["reward"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["obs"] = batch["obs"].permute((1, 2, 0, 3, 4, 5)).reshape((2*batch_size, 81, 8, 8, 27))
+    batch["done"] = batch["done"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["ep_return"] = batch["ep_return"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["ep_step"] = batch["ep_step"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["policy_logits"] = batch["policy_logits"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 4992))
+    batch["action_mask"] = batch["action_mask"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 4992))
+    batch["baseline"] = batch["baseline"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["logprobs"] = batch["logprobs"].permute((1, 2, 0)).reshape((2*batch_size, -1))
+    batch["action"] = batch["action"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 448))
+    batch["last_action"] = batch["last_action"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 448))
 
-    # Retornar el batch obtenido
+   # Retornar el batch obtenido
     return batch
 
 
 
 # TERMINAR ESTO!
-def learn(actor_model, learner_model, batch, optimizer, scheduler, lock=threading.lock()):
-    pass
+def PPO_learn(actor_model, learner_model, batch, optimizer, scheduler, lock=threading.Lock()):
+    
+    """ Performs a learning (optimization) step """
+
+    with lock:
+        learner_outputs, _ = learner_model.get_action(batch, agent_state=())
+        # AQUI DEBERÍA IR EL PPO
+    # Obtener valores de ventaja
+    #with torch.no_grad():
+        
+
+
+

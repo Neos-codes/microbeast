@@ -7,7 +7,7 @@ import torch
 from parser import *
 import typing
 
-from libs.utils import create_buffers, create_env, get_batch
+from libs.utils import create_buffers, create_env, get_batch, get_advantages
 from model import Agent
 from env_packer import Env_Packer
 
@@ -86,7 +86,6 @@ def act(agent: Agent,
 
             
 
-        print("Out of unroll length")
         # Una vez llena la trayectoria, pasar a full queue
         full_queue.put(index)
         # Para experimentar vuelvo a pasarlo a la free_queue
@@ -102,6 +101,7 @@ def train():
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
     T = 80             # unroll_length
     B = 4              # batch_size 
+    gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
     train_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -112,6 +112,16 @@ def train():
     nvec = micro_env.action_space.nvec.tolist()
     micro_model = Agent(micro_env.observation_space.shape, nvec, 8*8)
     micro_model.share_memory()
+
+    # Diccionario con shapes para simplificar paso de parametros
+    shapes = dict(obs=(n_envs*B, T+1,) + micro_env.observation_space.shape,
+                  action=(n_envs*B, T+1,) + micro_env.action_space.shape,
+                  logits=(n_envs*B, T+1,) + (sum(micro_model.nvec),),
+                  action_mask=(n_envs*B, T+1,) + (sum(micro_model.nvec),),
+                  batch_envs=(n_envs*B, -1)
+                  )
+
+    print("shapes:\n", shapes, shapes["obs"])
 
     # Crear buffer
     buffers = create_buffers(n_buffers, n_envs, T, micro_env.observation_space.shape)
@@ -159,11 +169,14 @@ def train():
         """ Get batches from buffer and backpropagates the info into NN model """
 
         nonlocal step  # Para referenciar la variable step de train()
+        nonlocal gamma # Para referenciar el factor de descuento de train()
+        nonlocal micro_env # Para referenciar un ambiente y sacar features
+        print("Gamma nonlocal:", gamma)
 
         while step < total_steps:
             
             # Generar batches
-            batch = get_batch(B, train_device, free_queue, full_queue, buffers)
+            batch = get_batch(B, gamma, train_device, free_queue, full_queue, buffers)
            
             # Pasar la info en batch por la red neuronal learner
             #stats = learn(DEFINIR))
@@ -171,10 +184,18 @@ def train():
     # END BATCH AND LEARN
 
     # Proceso padre no puede terminar antes que los hijos o da error
+    print("Antes de dormir...")
+    print("Obs space shape:", micro_env.observation_space.shape)
+    print("Action space shape:", micro_env.action_space.shape)
     sleep(30)
     print("Getting batches!")
-    batch = get_batch(B, train_device, free_queue, full_queue, buffers)
-    print("Unroll size:", batch["reward"][0].size())
+    batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
+    
+    for key in batch:
+        print(key, "shape:", batch[key].size())
+
+    print("Advantages shape:", advantages.size())
+    #print("Unroll size:", batch["reward"].size())
 
 
 

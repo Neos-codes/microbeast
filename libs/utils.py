@@ -66,11 +66,38 @@ def create_env(size: int, n_envs: int, max_steps: int) -> MicroRTSGridModeVecEnv
             )
     return envs
 
-def get_advantages(batch: dict, gamma: float) -> dict:
+def flatten_batch_and_advantages(batch: dict, advantages: torch.Tensor, shapes: dict) -> (dict, torch.Tensor):
 
-    """ Get a batch and return de advantages for all envs with shape (n_envs, unroll_length) """
+    """ Takes the batch and advantages and flatten them """
+
+    # Batch flatten
+    batch["reward"] = batch["reward"].reshape(-1)
+    batch["obs"] = batch["obs"].reshape((-1,) + shapes["obs"][2:])
+
+    batch["done"] = batch["done"].reshape(-1).float()
+    batch["ep_return"] = batch["ep_return"].reshape(-1)
+    batch["ep_step"] = batch["ep_step"].reshape(-1)
+    batch["policy_logits"] = batch["policy_logits"].reshape((-1,) + shapes["logits"][2:])
+    batch["action_mask"] = batch["action_mask"].reshape((-1,) + shapes["action_mask"][2:])
+    batch["baseline"] = batch["baseline"].reshape(-1)
+    batch["logprobs"] = batch["logprobs"].reshape(-1)
+    batch["action"] = batch["action"].reshape((-1,) + shapes["action"][2:])
+    batch["last_action"] = batch["last_action"].reshape((-1,) + shapes["action"][2:])
+
+    # Advantages flatten
+    advantages = advantages.flatten()
+
+    return batch, advantages
+
+
+
+def get_advantages(batch: dict, gamma: float, device: str) -> torch.Tensor:
+
+    """ Get a batch and return a tensor with advantages for all envs with shape (n_envs, unroll_length) """
 
     n_envs, unroll_length = batch["reward"].size()
+
+    # Prepare advantages tensor
     advantages = torch.zeros((n_envs, unroll_length))
 
     # Aliases
@@ -78,29 +105,38 @@ def get_advantages(batch: dict, gamma: float) -> dict:
     value = batch["baseline"]
     done = batch["done"]
 
-    for t in range(unroll_size - 1):
-        discount = 1
-        advantage_t = 0
+    # Ones to get result of multidimensional 1 - done
+    ones = torch.ones((n_envs, 1)).to(device)
 
-        for k in range(t, unroll_length - 1):
-            advantage_t += discount*(reward[:, k:k+1] + gamma*value[:, k+1:k+2] * (1 - done[:, k:k+1]) - value[:, k:k+1])
-            discount *= gamma
 
-        advantages[:, t:t+1] = advantage_t
-    
-    return advantages
+    with torch.no_grad():
+        # Para cada paso de las trayectorias
+        for t in range(unroll_length - 1):
+            discount = 1
+            advantage_t = 0
+            
+            # Se calcula la ventaja con todos los pasos que le suceden
+            for k in range(t, unroll_length - 1):
+                advantage_t += discount*(reward[:, k:k+1] + gamma*value[:, k+1:k+2] * (ones - done[:, k:k+1]) - value[:, k:k+1])
+                discount *= gamma
+
+            advantages[:, t:t+1] = advantage_t
+        
+    return advantages.to(device)
 
 
 def get_batch(
         batch_size: int,
+        shapes: dict,
+        gamma: float,
         device: str,
         free_queue: mp.SimpleQueue,
         full_queue: mp.SimpleQueue,
         buffers: Buffers,
         lock=threading.Lock(),
-        ) -> dict:
+        ) -> (dict, torch.Tensor):
 
-    """ Returns {batch_size} batches taken from the buffer """
+    """ Returns {batch_size} batches taken from the buffer and a tensor with advantages """
     # Lock full queue para extraer indices
     with lock:
         indices = [full_queue.get() for _ in range(batch_size)]
@@ -114,28 +150,35 @@ def get_batch(
     # Liberar indices obtenidos de la full queue en la free queue
     # No es necesario el lock porque no hay indices iguales
     for m in indices:
-        print(f"Buffer {m} liberado!")
+        #print(f"Buffer {m} liberado!")
         free_queue.put(m)
     
     # Pasar tensores del batch al device de entrenamiento
-    # Working
     batch = {k: t.to(device=device, non_blocking=True) for k, t in batch.items()}
     
-    # reshape para simplificar codigo
-    batch["reward"] = batch["reward"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["obs"] = batch["obs"].permute((1, 2, 0, 3, 4, 5)).reshape((2*batch_size, 81, 8, 8, 27))
-    batch["done"] = batch["done"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["ep_return"] = batch["ep_return"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["ep_step"] = batch["ep_step"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["policy_logits"] = batch["policy_logits"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 4992))
-    batch["action_mask"] = batch["action_mask"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 4992))
-    batch["baseline"] = batch["baseline"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["logprobs"] = batch["logprobs"].permute((1, 2, 0)).reshape((2*batch_size, -1))
-    batch["action"] = batch["action"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 448))
-    batch["last_action"] = batch["last_action"].permute((1, 2, 0, 3)).reshape((2*batch_size, 81, 448))
+    # ----- reshape batch para simplificar codigo ----- #
+    # "shapes" es un dict definido en los inicios de la funcion "train()"
+    # con el fin de reducir los parametros de esta funcion
 
-   # Retornar el batch obtenido
-    return batch
+    batch["reward"] = batch["reward"].permute((1, 2, 0)).reshape(shapes["batch_envs"])
+    batch["obs"] = batch["obs"].permute((1, 2, 0, 3, 4, 5)).reshape(shapes["obs"])
+
+    batch["done"] = batch["done"].permute((1, 2, 0)).reshape(shapes["batch_envs"]).float()
+    batch["ep_return"] = batch["ep_return"].permute((1, 2, 0)).reshape(shapes["batch_envs"])
+    batch["ep_step"] = batch["ep_step"].permute((1, 2, 0)).reshape(shapes["batch_envs"])
+    batch["policy_logits"] = batch["policy_logits"].permute((1, 2, 0, 3)).reshape(shapes["logits"])
+    batch["action_mask"] = batch["action_mask"].permute((1, 2, 0, 3)).reshape(shapes["action_mask"])
+    batch["baseline"] = batch["baseline"].permute((1, 2, 0)).reshape(shapes["batch_envs"])
+    batch["logprobs"] = batch["logprobs"].permute((1, 2, 0)).reshape(shapes["batch_envs"])
+    batch["action"] = batch["action"].permute((1, 2, 0, 3)).reshape(shapes["action"])
+    batch["last_action"] = batch["last_action"].permute((1, 2, 0, 3)).reshape(shapes["action"])
+
+    # Obtenemos los valores de ventaja con las dimensiones actuales del batch
+    advantages = get_advantages(batch, gamma, device)
+
+    # Luego estiramos todas las features
+    return flatten_batch_and_advantages(batch, advantages, shapes)  #dict, tensor 
+
 
 
 

@@ -129,27 +129,20 @@ class Agent(nn.Module):
         return tuple()
 
     # Lo de agent state es para satisfacer MicroBeast (MonoBeast)
-    def forward(self, input_dict: dict, agent_state, inds=[]):
-        #print("---  OBS SIZE ---\n", input_dict["obs"][0, 0, ...].size())
-
-            # Si no se dan los indices, entonces se está haciendo un step en el ambiente
-        if len(inds) == 0:
-            return self.network(input_dict["obs"][0, 0, ...].permute((0, 3, 1, 2)))
-
-        # Si se dan los indices, estamos actualizando
-        print("Forward con indices dados!")
-        return self.network(input_dict["obs"][0, 0, inds, :].permute((0, 3, 1, 2)))
-
-
+    def forward(self, input_dict: dict, agent_state):
+        # Primer 0 es index del batch y segundo el step del batch 
+        #print("---  OBS SIZE ---\n", input_dict["obs"][0, 0, ...].size(), "\n------\n", input_dict["obs"][0, ...].size())
+        return self.network(input_dict["obs"][0, 0, ...].permute((0, 3, 1, 2)))
 
     # Get action ahora recibe un diccionario en lugar de solo las observaciones!
-    def get_action(self, input_dict: dict, inds = [], agent_state=()):
+    def get_action(self, input_dict: dict, action=None, action_masks=None, agent_state=()):
         # Siempre entra x (obs) de shape [n_envs, h, w, 27]
         logits = self.actor(self.forward(input_dict, agent_state))    # [n_envs, 78hw]
         split_logits = torch.split(logits, self.nvec, dim=1)   #  (24, 7 * hw)   (7 actions * grid_size)  7 * 64 = 448
+        # Si se da la action mask, siempre es de shape [12*hw, 78]
 
-        # Si no se dan los indices del batch, se ejecutan los steps en el ambiente
-        if len(inds) == 0:
+        # La mascara cuando la accion es None, debe tener shape  [num_envs, 4992]
+        if action == None:
             #print("Action mask dim:", input_dict["action_mask"][0, ...].shape)
             action_mask = input_dict["action_mask"][0, ...]  # shape (n_envs, 78hw)
 
@@ -157,12 +150,11 @@ class Agent(nn.Module):
             multi_categoricals = [CategoricalMasked(logits=logits, masks=ams) for (logits, ams) in zip(split_logits, split_action_mask)]
             action = torch.stack([categorical.sample() for categorical in multi_categoricals])
 
-        # Si se dan los indices del batch, se esta haciendo el update
+        # La mascara cuando la accion es dada, debe tener shape [minibatch_size, 4992]
         else:
-            print("Get action updating")
-            action = action.T    # Trasponer accion para calzar con action mask   [n_envs, 7hw] -> [7hw, n_envs]
-            print("Action mask size en update:", input_dict["action_mask"][0, index, ...])
-            action_mask = input_dict["action_mask"][0, index, ...]    # [num_envs, 4992]
+            action = action.view(-1, action.size()[-1]).T    # Trasponer accion para calzar con action mask
+            # NO DEBO CAMBIAR LOS 0'S POR -9E8!!!!!
+            action_mask = torch.Tensor(action_masks).reshape((-1, sum(self.nvec)))#.to(device)  # [num_envs, 4992]
             #print("Action shape:", action.size())
             #print("Action mask shape:", action_mask.size())
             split_action_mask = torch.split(action_mask, self.nvec, dim=1)

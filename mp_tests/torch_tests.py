@@ -3,7 +3,7 @@ import numpy as np
 
 
 
-proto_dones = [[0, 0, 0, 1], [0, 0, 0, 1]]
+"""proto_dones = [[0, 0, 0, 1], [0, 0, 0, 1]]
 proto_dones = np.array(proto_dones)
 # Tensor random de 2 filas y 10 columnas, unroll_size = 10 (columnas)
 unroll_size = 4
@@ -24,4 +24,10 @@ for t in range(unroll_size - 1):
         discount *= gamma
     advantages[:, t:t+1] = advantage_t
 
-print("advantages:", advantages)
+print("advantages:", advantages)"""
+
+x = torch.randint(0, 10, (1, 1, 10, 10))
+print("x shape:", x.size())
+print(x)
+print("x sliced shape:", x[0, 0, 0:5, :].size())
+print(x[0, 0, 0:5, :])

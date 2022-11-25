@@ -69,7 +69,7 @@ def act(agent: Agent,
             envs.render()
             # Generar accion del agente
             with torch.no_grad():
-                agent_output, _ = agent.get_action(env_output, agent_state=())
+                agent_output, _ = agent.get_action(env_output)
 
             
             # Step en el ambiente
@@ -124,7 +124,7 @@ def train():
     print("shapes:\n", shapes, shapes["obs"])
 
     # Crear buffer
-    buffers = create_buffers(n_buffers, n_envs, T, micro_env.observation_space.shape)
+    buffers = create_buffers(n_buffers, n_envs, B, T, micro_env.observation_space.shape)
 
     # Desde ahora, micro_env solo sirve para constructor del Learner
 
@@ -179,6 +179,7 @@ def train():
             batch = get_batch(B, gamma, train_device, free_queue, full_queue, buffers)
            
             # Pasar la info en batch por la red neuronal learner
+            #learn(
             #stats = learn(DEFINIR))
 
     # END BATCH AND LEARN
@@ -189,12 +190,16 @@ def train():
     print("Action space shape:", micro_env.action_space.shape)
     sleep(30)
     print("Getting batches!")
+    print("Antes del batch:")
+    for key in buffers:
+        print(key, "shape:", buffers[key][0].size())
     batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
     
     for key in batch:
         print(key, "shape:", batch[key].size())
 
     print("Advantages shape:", advantages.size())
+    print("batch_size:", batch["reward"].size()[-1])
     #print("Unroll size:", batch["reward"].size())
 
 

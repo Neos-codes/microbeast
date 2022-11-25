@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import typing
 import numpy as np
 import multiprocessing as mp
@@ -6,6 +7,8 @@ import threading
 
 from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
+
+import random
 
 # ----- Aliases
 # Un Buffer será un diccionario con keys string y claves list(Tensor)
@@ -24,7 +27,7 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 # ----- Functions ----- #
 
 # T = unroll_length    n_envs: num of envs in a gym-microRTS execution 
-def create_buffers(n_buffers: int, n_envs: int, T: int, obs_size: tuple) -> Buffers:
+def create_buffers(n_buffers: int, n_envs: int, B: int, T: int, obs_size: tuple) -> Buffers:
     """Creates \"n_buffers\" buffers that share memory between processes"""
 
     print("Creando buffers...")
@@ -70,20 +73,22 @@ def flatten_batch_and_advantages(batch: dict, advantages: torch.Tensor, shapes: 
 
     """ Takes the batch and advantages and flatten them """
 
-    # Batch flatten
-    batch["reward"] = batch["reward"].reshape(-1)
-    batch["obs"] = batch["obs"].reshape((-1,) + shapes["obs"][2:])
 
-    batch["done"] = batch["done"].reshape(-1).float()
-    batch["ep_return"] = batch["ep_return"].reshape(-1)
-    batch["ep_step"] = batch["ep_step"].reshape(-1)
-    batch["policy_logits"] = batch["policy_logits"].reshape((-1,) + shapes["logits"][2:])
-    batch["action_mask"] = batch["action_mask"].reshape((-1,) + shapes["action_mask"][2:])
-    batch["baseline"] = batch["baseline"].reshape(-1)
-    batch["logprobs"] = batch["logprobs"].reshape(-1)
-    batch["action"] = batch["action"].reshape((-1,) + shapes["action"][2:])
-    batch["last_action"] = batch["last_action"].reshape((-1,) + shapes["action"][2:])
+    # Batch flatten 
+    batch["reward"] = batch["reward"].reshape((1, -1))
+    batch["obs"] = batch["obs"].reshape((1, -1,) + shapes["obs"][2:])
 
+    batch["done"] = batch["done"].reshape((1, -1)).float()
+    batch["ep_return"] = batch["ep_return"].reshape((1, -1))
+    batch["ep_step"] = batch["ep_step"].reshape((1, -1))
+    batch["policy_logits"] = batch["policy_logits"].reshape((1, -1,) + shapes["logits"][2:])
+    batch["action_mask"] = batch["action_mask"].reshape((1, -1,) + shapes["action_mask"][2:])
+    batch["baseline"] = batch["baseline"].reshape((1, -1))
+    batch["logprobs"] = batch["logprobs"].reshape((1, -1))
+    batch["action"] = batch["action"].reshape((1, -1,) + shapes["action"][2:])
+    batch["last_action"] = batch["last_action"].reshape((1, -1,) + shapes["action"][2:])
+    
+    
     # Advantages flatten
     advantages = advantages.flatten()
 
@@ -183,16 +188,27 @@ def get_batch(
 
 
 # TERMINAR ESTO!
-def PPO_learn(actor_model, learner_model, batch, optimizer, scheduler, lock=threading.Lock()):
+def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimizer, B: int, n_envs: int, lock=threading.Lock()):
     
     """ Performs a learning (optimization) step """
 
     with lock:
         learner_outputs, _ = learner_model.get_action(batch, agent_state=())
         # AQUI DEBERÍA IR EL PPO
-    # Obtener valores de ventaja
-    #with torch.no_grad():
+        batch_size = batch["reward"],size()[-1]  # = n_envs*B*T
+        inds = np.arange(batch_size)  # arange of (n_envs*B*T)
         
+        # Por cada batch, actualizamos 4 veces
+        for e in range(4):
+            # Desordenar indices para eliminar dependencia de estados y accion
+            random.shuffle(inds) 
+            for start in range(0, batch_size, 4):  # 4 = minibatch_size
+                end = start + minibatch_size
+                minibatch_ind = inds[start:end]
+                mb_advantages = advantages[minibatch_ind]
+                
+                learner_output =  learner_model(batch, inds=minibatch_ind)
 
-
-
+                new_logprobs = learner_output["logprobs"]
+                print("New logprobs shape:", new_logprobs.size())
+                #ratio = (a

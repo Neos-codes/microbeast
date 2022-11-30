@@ -7,8 +7,8 @@ import torch
 from parser import *
 import typing
 
-from libs.utils import create_buffers, create_env, get_batch, get_advantages
-from model import Agent
+from libs.utils import create_buffers, create_env, get_batch, get_advantages, PPO_learn 
+from model import Agent 
 from env_packer import Env_Packer
 
 
@@ -27,15 +27,15 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
 
 
-def act(agent: Agent,
-        buffers: Buffers,
-        num: int,
-        free_queue: mp.SimpleQueue,
-        full_queue: mp.SimpleQueue,
-        unroll_length: int,
+def act(agent: Agent,                   # nn.Module
+        buffers: Buffers,               # Buffer dictionary
+        a_id: int,                      # Agent id number
+        free_queue: mp.SimpleQueue,     # Queue of free indexes from buffer
+        full_queue: mp.SimpleQueue,     # Que of full indexes from buffer
+        unroll_length: int,             # T, unroll_size, tamaño trayectoria  (see IMPALA paper)
         ):
 
-    print(f"Hola! Soy el actor {num}")
+    print(f"Hola! Soy el actor {a_id}")
     gym_envs = create_env(8, 2, 512)
     envs = Env_Packer(gym_envs)
     env_output = envs.initial()
@@ -46,8 +46,14 @@ def act(agent: Agent,
     while True:
         # Mostrar tablero
         envs.render()
+        # Obtener index de la free queue
         index = free_queue.get() 
-        print(f"index in actor {num}: {index}")
+        print(f"index in actor {a_id}: {index}")
+
+        # Guardar a_id de actor para referenciar el modelo al
+        # hacer backpropagate
+        print("Actor id:", a_id)
+        buffers["actor"][index] = a_id
 
 
         # ----- Guardar condiciones iniciales en el buffer ----- #
@@ -62,7 +68,7 @@ def act(agent: Agent,
         # Sleep "entre buffers"
         sleep(5)
         if free_queue.empty():
-            print(f"Continue por index ocupados en actor {num}")
+            print(f"Continue por index ocupados en actor {a_id}")
             continue
 
         for t in range(unroll_length):
@@ -113,6 +119,7 @@ def train():
     micro_model = Agent(micro_env.observation_space.shape, nvec, 8*8)
     micro_model.share_memory()
 
+   
     # Diccionario con shapes para simplificar paso de parametros
     shapes = dict(obs=(n_envs*B, T+1,) + micro_env.observation_space.shape,
                   action=(n_envs*B, T+1,) + micro_env.action_space.shape,
@@ -121,20 +128,23 @@ def train():
                   batch_envs=(n_envs*B, -1)
                   )
 
-    print("shapes:\n", shapes, shapes["obs"])
+    #print("shapes:\n", shapes, shapes["obs"])
 
     # Crear buffer
     buffers = create_buffers(n_buffers, n_envs, B, T, micro_env.observation_space.shape)
 
     # Desde ahora, micro_env solo sirve para constructor del Learner
+    print("actor ids:", buffers["actor"])
+
+    print("Main process pid:", os.getpid())
 
     # ----- Crear Queues ----- #
     # free_queue para indices de buffers disponibles para llenar
-    # full_queue para indices de buffers con trayectorias para backprop
+    # full_queue para indices de buffers con trayectorias para backpropagation
     ctx = mp.get_context("spawn")
     free_queue = ctx.SimpleQueue()
     full_queue = ctx.SimpleQueue()
-
+    
     # ----- Llenar la free queue con los indices ----- #
     for index in range(n_buffers):
         free_queue.put(index)   # Indices de las trayectoras para backprop
@@ -142,17 +152,26 @@ def train():
 
     # ----- Crear subprocesos (Actores) ----- #
     actor_processes = []
+    actor_models = []
     for i in range(n_actors):
+
+        # Creamos modelo para pasarlo al proceso
+        model = Agent(micro_env.observation_space.shape, nvec, env_size**2)
+        
+        # Creamos proceso actor con el modelo recien creado
         actor = ctx.Process(
                     target=act,
-                    args=(micro_model, buffers, i, free_queue, full_queue, T)
+                    args=(model, buffers, i, free_queue, full_queue, T)
                 )
         actor.start()
+
+        # Guardamos referencias al proceso actor y a su modelo de red neuronal
         actor_processes.append(actor)
+        actor_models.append(model)
 
     
     # ----- Crear Modelo de Aprendizaje ----- #
-    micro_learner = Agent(obs_space_shape, nvec, 8*8)
+    micro_learner = Agent(obs_space_shape, nvec, env_size**2)
 
     # ----- Crear Optimizador ----- #
     micro_optimizer = torch.optim.Adam(micro_learner.parameters(), lr=2.5e-4, eps=1e-5)
@@ -168,29 +187,32 @@ def train():
     def batch_and_learn(i: int, total_steps: int, lock=threading.Lock()):
         """ Get batches from buffer and backpropagates the info into NN model """
 
-        nonlocal step  # Para referenciar la variable step de train()
-        nonlocal gamma # Para referenciar el factor de descuento de train()
-        nonlocal micro_env # Para referenciar un ambiente y sacar features
-        print("Gamma nonlocal:", gamma)
+        #nonlocal step  # Para referenciar la variable step de train()
+        #nonlocal gamma # Para referenciar el factor de descuento de train()
+        #nonlocal micro_env # Para referenciar un ambiente y sacar features
+        #print("Gamma nonlocal:", gamma)
 
-        while step < total_steps:
+        #while step < total_steps:
             
-            # Generar batches
-            batch = get_batch(B, gamma, train_device, free_queue, full_queue, buffers)
-           
-            # Pasar la info en batch por la red neuronal learner
-            #learn(
-            #stats = learn(DEFINIR))
 
-    # END BATCH AND LEARN
+            # Generar batches
+            #batch = get_batch(B, gamma, train_device, free_queue, full_queue, buffers)
+           
+            #PPO_learn(
+
+        print("PID en batch_and_learn", os.getpid())
+
+
+        # END BATCH AND LEARN
 
     # Proceso padre no puede terminar antes que los hijos o da error
-    print("Antes de dormir...")
+    """print("Antes de dormir...")
     print("Obs space shape:", micro_env.observation_space.shape)
-    print("Action space shape:", micro_env.action_space.shape)
+    print("Action space shape:", micro_env.action_space.shape)"""
     sleep(30)
-    print("Getting batches!")
-    print("Antes del batch:")
+    print("Buffers ocupados por:", buffers["actor"])
+    #print("Getting batches!")
+    """print("Antes del batch:")
     for key in buffers:
         print(key, "shape:", buffers[key][0].size())
     batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
@@ -200,8 +222,9 @@ def train():
 
     print("Advantages shape:", advantages.size())
     print("batch_size:", batch["reward"].size()[-1])
-    #print("Unroll size:", batch["reward"].size())
+    #print("Unroll size:", batch["reward"].size())"""
 
+    batch_and_learn(2, 2)
 
 
 def test():

@@ -51,6 +51,10 @@ def create_buffers(n_buffers: int, n_envs: int, B: int, T: int, obs_size: tuple)
     for _ in range(n_buffers):
         for key in buffers:
             buffers[key].append(torch.empty(**specs[key]).share_memory_())
+
+    # Tensor para guardar id de los actores     THIS WORKS!
+    buffers["actor"] = torch.empty((n_buffers,)).share_memory_()
+
     return buffers
 
 
@@ -211,4 +215,4 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
 
                 new_logprobs = learner_output["logprobs"]
                 print("New logprobs shape:", new_logprobs.size())
-                #ratio = (a
+                ratio = (new_logprobs - batch["logprobs"])

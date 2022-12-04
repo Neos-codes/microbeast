@@ -9,7 +9,6 @@ from gym_microrts import microrts_ai
 from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 
 import random
-
 # ----- Aliases
 # Un Buffer será un diccionario con keys string y claves list(Tensor)
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
@@ -52,8 +51,6 @@ def create_buffers(n_buffers: int, n_envs: int, B: int, T: int, obs_size: tuple)
         for key in buffers:
             buffers[key].append(torch.empty(**specs[key]).share_memory_())
 
-    # Tensor para guardar id de los actores     THIS WORKS!
-    buffers["actor"] = torch.empty((n_buffers,)).share_memory_()
 
     return buffers
 
@@ -100,7 +97,7 @@ def flatten_batch_and_advantages(batch: dict, advantages: torch.Tensor, shapes: 
 
 
 
-def get_advantages(batch: dict, gamma: float, device: str) -> torch.Tensor:
+def get_advantages(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
 
     """ Get a batch and return a tensor with advantages for all envs with shape (n_envs, unroll_length) """
 
@@ -115,7 +112,7 @@ def get_advantages(batch: dict, gamma: float, device: str) -> torch.Tensor:
     done = batch["done"]
 
     # Ones to get result of multidimensional 1 - done
-    ones = torch.ones((n_envs, 1)).to(device)
+    ones = torch.ones((n_envs, 1))#.to(device)
 
 
     with torch.no_grad():
@@ -146,6 +143,9 @@ def get_batch(
         ) -> (dict, torch.Tensor):
 
     """ Returns {batch_size} batches taken from the buffer and a tensor with advantages """
+
+    print("Gettin batch...\nBatch size:", batch_size)
+
     # Lock full queue para extraer indices
     with lock:
         indices = [full_queue.get() for _ in range(batch_size)]
@@ -163,7 +163,7 @@ def get_batch(
         free_queue.put(m)
     
     # Pasar tensores del batch al device de entrenamiento
-    batch = {k: t.to(device=device, non_blocking=True) for k, t in batch.items()}
+    #batch = {k: t.to(device=device, non_blocking=True) for k, t in batch.items()}
     
     # ----- reshape batch para simplificar codigo ----- #
     # "shapes" es un dict definido en los inicios de la funcion "train()"
@@ -183,7 +183,7 @@ def get_batch(
     batch["last_action"] = batch["last_action"].permute((1, 2, 0, 3)).reshape(shapes["action"])
 
     # Obtenemos los valores de ventaja con las dimensiones actuales del batch
-    advantages = get_advantages(batch, gamma, device)
+    advantages = get_advantages(batch, gamma)#, device)
 
     # Luego estiramos todas las features
     return flatten_batch_and_advantages(batch, advantages, shapes)  #dict, tensor 
@@ -196,23 +196,56 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
     
     """ Performs a learning (optimization) step """
 
+    print("PPO Learning!")
     with lock:
-        learner_outputs, _ = learner_model.get_action(batch, agent_state=())
+        # Debo calcular la recompensa del ultimo step
+        #learner_outputs, _ = learner_model.get_action(batch, agent_state=())
         # AQUI DEBERÍA IR EL PPO
-        batch_size = batch["reward"],size()[-1]  # = n_envs*B*T
+        batch_size = batch["reward"].size()[-1]  # = n_envs*B*T
         inds = np.arange(batch_size)  # arange of (n_envs*B*T)
         
         # Por cada batch, actualizamos 4 veces
         for e in range(4):
+            print(f"Update {e}")
             # Desordenar indices para eliminar dependencia de estados y accion
             random.shuffle(inds) 
-            for start in range(0, batch_size, 4):  # 4 = minibatch_size
-                end = start + minibatch_size
+            minibatch_size = batch_size // 4
+            print("Batch size:", batch_size, "  mb_size:", minibatch_size)
+            mb_update = 0
+            for start in range(0, batch_size, minibatch_size):  # 4 = minibatch_size
+                print(f"Updating minibatch {mb_update}")
+                mb_update += 1
+                end = start + minibatch_size 
                 minibatch_ind = inds[start:end]
                 mb_advantages = advantages[minibatch_ind]
                 
-                learner_output =  learner_model(batch, inds=minibatch_ind)
+                learner_output =  learner_model.get_action(batch, inds=minibatch_ind, agent_state=())
 
-                new_logprobs = learner_output["logprobs"]
-                print("New logprobs shape:", new_logprobs.size())
-                ratio = (new_logprobs - batch["logprobs"])
+
+                new_logprobs = learner_output[0]["logprobs"]
+                old_logprobs = batch["logprobs"].view(-1)[minibatch_ind]
+                ratio = (new_logprobs - batch["logprobs"][0][minibatch_ind]).exp()
+
+                # Loss
+                loss_1 = -mb_advantages*ratio
+                loss_2 = -mb_advantages * torch.clamp(ratio, 1 - 0.2, 1 + 0.2)
+
+                # Clip ratio
+                pg_loss = torch.max(loss_1, loss_2).mean()
+                entropy_loss = learner_output[0]["entropy"].mean()
+
+                # Critic loss
+                new_baselines = learner_output[0]["baseline"].flatten()
+                old_baselines = batch["baseline"][0][minibatch_ind]
+                critic_loss = ((new_baselines - old_baselines)**2).mean()
+
+                # Total loss
+                loss = pg_loss - 0.01 * entropy_loss + 0.5*critic_loss*0.5
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                actor_model.load_state_dict(learner_model.state_dict())
+
+                print("Total loss:", loss.item())

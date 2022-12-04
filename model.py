@@ -17,7 +17,6 @@ from gym_microrts.envs.vec_env import MicroRTSGridModeVecEnv
 import random
 import os
 
-
 torch.set_printoptions(threshold=sys.maxsize)
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -26,6 +25,8 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
+#next(micro_model.parameters()).device)
 
 
 # Aplica mascara a distribucion categorica, para escoger acciones
@@ -59,6 +60,10 @@ class Residual_Block(nn.Module):
         self.conv0 = nn.Conv2d(in_channels=channels, out_channels= channels, kernel_size=3, padding=1)
         self.conv1 = nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=3, padding=1)
 
+    def my_device(self):
+        print(" - Res block 1:", next(self.conv0.parameters()).device)
+        print(" - Res block 2:", next(self.conv1.parameters()).device)
+
     def forward(self, x):
         nn_input = x
         x = nn.functional.relu(x)
@@ -80,6 +85,12 @@ class ConvSequence(nn.Module):
         self.res_block0 = Residual_Block(self._out_channels)
         self.res_block1 = Residual_Block(self._out_channels)
 
+    def my_device(self):
+        self.conv = self.conv.cuda()
+        print("Conv_seq:", next(self.conv.parameters()).device)
+        self.res_block0.my_device()
+        self.res_block1.my_device()
+
 
     def forward(self, x):
         x = self.conv(x)
@@ -99,27 +110,28 @@ class ConvSequence(nn.Module):
 
 # Agente
 class Agent(nn.Module):
-    def __init__(self, obs_space_shape: tuple, nvec: list, mapsize=8*8):
+    def __init__(self, obs_space_shape: tuple, nvec: list, mapsize=8*8, device="cpu"):
         super(Agent, self).__init__()
         h, w, c = obs_space_shape
         _shape = (c, h, w)
         self.mapsize = mapsize
         self.nvec = nvec
-        convseqs = []
+        convseqs = nn.ModuleList()
 
         for out_channels in [16, 32, 32]:
             conv_seq = ConvSequence(_shape, out_channels)
             _shape = conv_seq.get_output_shape()
             convseqs.append(conv_seq)
 
-        convseqs += [
+        convseqs += nn.ModuleList([
                 nn.Flatten(),
                 nn.ReLU(),
                 nn.Linear(in_features=_shape[0]*_shape[1]*_shape[2], out_features=256),
                 nn.ReLU(),
-                ]
+                ])
 
         self.network = nn.Sequential(*convseqs)
+
 
         self.actor = layer_init(nn.Linear(256, sum(self.nvec)), std=0.0)
         self.critic = layer_init(nn.Linear(256, 1), std=1)
@@ -127,6 +139,14 @@ class Agent(nn.Module):
     def initial_state(self, batch_size):
         # Si no se usa lstm, retorna una tupla vacia  (No usaremos lstm)
         return tuple()
+
+    def my_device(self):
+        print("Self device:", next(self.parameters()).device)
+        print(next(self.actor.parameters()).device)
+        print(next(self.critic.parameters()).device)
+        for i in range(3):
+            self.network[i].my_device()
+        print(next(self.network.parameters()).device)
 
     # Lo de agent state es para satisfacer MicroBeast (MonoBeast)
     def forward(self, input_dict: dict, agent_state, inds=[]):
@@ -137,15 +157,14 @@ class Agent(nn.Module):
             return self.network(input_dict["obs"][0, 0, ...].permute((0, 3, 1, 2)))
 
         # Si se dan los indices, estamos actualizando
-        print("Forward con indices dados!")
-        return self.network(input_dict["obs"][0, 0, inds, :].permute((0, 3, 1, 2)))
+        return self.network(input_dict["obs"][0, inds, ...].permute((0, 3, 1, 2)))
 
 
 
     # Get action ahora recibe un diccionario en lugar de solo las observaciones!
-    def get_action(self, input_dict: dict, inds = [], agent_state=()):
+    def get_action(self, input_dict: dict, inds=[], agent_state=()):
         # Siempre entra x (obs) de shape [n_envs, h, w, 27]
-        logits = self.actor(self.forward(input_dict, agent_state))    # [n_envs, 78hw]
+        logits = self.actor(self.forward(input_dict, agent_state, inds))    # [n_envs, 78hw]
         split_logits = torch.split(logits, self.nvec, dim=1)   #  (24, 7 * hw)   (7 actions * grid_size)  7 * 64 = 448
 
         # Si no se dan los indices del batch, se ejecutan los steps en el ambiente
@@ -159,12 +178,16 @@ class Agent(nn.Module):
 
         # Si se dan los indices del batch, se esta haciendo el update
         else:
-            print("Get action updating")
-            action = action.T    # Trasponer accion para calzar con action mask   [n_envs, 7hw] -> [7hw, n_envs]
-            print("Action mask size en update:", input_dict["action_mask"][0, index, ...])
-            action_mask = input_dict["action_mask"][0, index, ...]    # [num_envs, 4992]
-            #print("Action shape:", action.size())
-            #print("Action mask shape:", action_mask.size())
+            # Obtener acciones de los indices obtenidos
+            a_dims = input_dict["action"].size()
+            action = input_dict["action"].view(a_dims[1], a_dims[2])                
+
+            # T para calzar con action mask [n_envs, 7hw] -> [7hw, n_envs]
+            action = action[inds].transpose(1, 0)
+
+
+            #print("Action mask size en update:", input_dict["action_mask"][0, inds, ...].size())
+            action_mask = input_dict["action_mask"][0, inds, ...]    # [num_envs, 4992]
             split_action_mask = torch.split(action_mask, self.nvec, dim=1)
             multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in zip(split_logits, split_action_mask)]
 
@@ -183,20 +206,27 @@ class Agent(nn.Module):
         #print("action mask shape:", action_mask.size())
         #print("action size:", action.size())  # same num_predicted_par 448
 
-
-        #print("logprob shape:", logprob.sum(1).size())     # [envs]  logprob por ambiente
         #print("entropy shape:", entropy.sum(1).size())
         #print("logprob of this action:", logprob.sum(1))    # logprob.sum(1).sum()
 
 
         # ahora obtenemos el valor dentro de get_action
-        baseline = self.get_value(input_dict, ())    # "frame" es la clave de donde se guardan las observaciones
-        
-        return (dict(action=action, policy_logits=logits, 
-            logprobs=logprob.sum(1)), ()) 
+        baseline = self.get_value(input_dict, (), inds).view(1, -1)
+
+
+        if len(inds) == 0:
+            output = (dict(action=action, policy_logits=logits, 
+            logprobs=logprob.sum(1), baseline=baseline), ()) 
+
+        else:
+            output = (dict(action=action, policy_logits=logits, 
+            logprobs=logprob.sum(1), baseline=baseline, entropy=entropy), ()) 
+
+        return output
     
 
-    def get_value(self, input_dict: dict, agent_state=()):
-        return self.critic(self.forward(input_dict, agent_state))
+    def get_value(self, input_dict: dict, agent_state=(), inds=[]) -> torch.Tensor:
+        return self.critic(self.forward(input_dict, agent_state, inds=inds))
+
 
 

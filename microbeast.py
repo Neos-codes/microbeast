@@ -47,13 +47,13 @@ def act(agent: Agent,                   # nn.Module
         # Mostrar tablero
         envs.render()
         # Obtener index de la free queue
+        if free_queue.empty():
+            #print(f"Continue por index ocupados en actor {a_id}")
+            continue
+
+
         index = free_queue.get() 
         print(f"index in actor {a_id}: {index}")
-
-        # Guardar a_id de actor para referenciar el modelo al
-        # hacer backpropagate
-        print("Actor id:", a_id)
-        buffers["actor"][index] = a_id
 
 
         # ----- Guardar condiciones iniciales en el buffer ----- #
@@ -65,11 +65,6 @@ def act(agent: Agent,                   # nn.Module
         for key in agent_output:
             buffers[key][index][0, ...] = agent_output[key]
         
-        # Sleep "entre buffers"
-        sleep(5)
-        if free_queue.empty():
-            print(f"Continue por index ocupados en actor {a_id}")
-            continue
 
         for t in range(unroll_length):
             envs.render()
@@ -106,19 +101,21 @@ def train():
     n_envs = 2         # num envs per gym instance
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
     T = 80             # unroll_length
-    B = 4              # batch_size 
+    B = 2              # batch_size 
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
     train_device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Train device:", train_device)
 
     # Crear ambiente para obtener shapes
     micro_env = create_env(env_size, n_envs, 512) 
     obs_space_shape = micro_env.observation_space.shape
     nvec = micro_env.action_space.nvec.tolist()
-    micro_model = Agent(micro_env.observation_space.shape, nvec, 8*8)
+    micro_model = Agent(micro_env.observation_space.shape, nvec, env_size**2)
     micro_model.share_memory()
 
+    print("Micro model device:", next(micro_model.parameters()).device)
    
     # Diccionario con shapes para simplificar paso de parametros
     shapes = dict(obs=(n_envs*B, T+1,) + micro_env.observation_space.shape,
@@ -133,8 +130,6 @@ def train():
     # Crear buffer
     buffers = create_buffers(n_buffers, n_envs, B, T, micro_env.observation_space.shape)
 
-    # Desde ahora, micro_env solo sirve para constructor del Learner
-    print("actor ids:", buffers["actor"])
 
     print("Main process pid:", os.getpid())
 
@@ -152,26 +147,24 @@ def train():
 
     # ----- Crear subprocesos (Actores) ----- #
     actor_processes = []
-    actor_models = []
     for i in range(n_actors):
 
-        # Creamos modelo para pasarlo al proceso
-        model = Agent(micro_env.observation_space.shape, nvec, env_size**2)
         
         # Creamos proceso actor con el modelo recien creado
         actor = ctx.Process(
                     target=act,
-                    args=(model, buffers, i, free_queue, full_queue, T)
+                    args=(micro_model, buffers, i, free_queue, full_queue, T)
                 )
         actor.start()
 
         # Guardamos referencias al proceso actor y a su modelo de red neuronal
         actor_processes.append(actor)
-        actor_models.append(model)
 
     
     # ----- Crear Modelo de Aprendizaje ----- #
-    micro_learner = Agent(obs_space_shape, nvec, env_size**2)
+    micro_learner = Agent(obs_space_shape, nvec, env_size**2, train_device)
+    #micro_learner.cuda()
+    #micro_learner.my_device()
 
     # ----- Crear Optimizador ----- #
     micro_optimizer = torch.optim.Adam(micro_learner.parameters(), lr=2.5e-4, eps=1e-5)
@@ -187,18 +180,22 @@ def train():
     def batch_and_learn(i: int, total_steps: int, lock=threading.Lock()):
         """ Get batches from buffer and backpropagates the info into NN model """
 
-        #nonlocal step  # Para referenciar la variable step de train()
-        #nonlocal gamma # Para referenciar el factor de descuento de train()
-        #nonlocal micro_env # Para referenciar un ambiente y sacar features
-        #print("Gamma nonlocal:", gamma)
+        nonlocal step  # Para referenciar la variable step de train()
+        nonlocal gamma # Para referenciar el factor de descuento de train()
+        nonlocal micro_env # Para referenciar un ambiente y sacar features
+        #nonlocal micro_learner 
 
-        #while step < total_steps:
+        
+        print("Step nonlocal:", step)
+        print("Gamma nonlocal:", gamma)
+
+        while step < total_steps:
             
 
-            # Generar batches
-            #batch = get_batch(B, gamma, train_device, free_queue, full_queue, buffers)
+            #Generar batches
+            batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
            
-            #PPO_learn(
+            PPO_learn(micro_model, micro_model, batch, advantages, micro_optimizer, B, n_envs)
 
         print("PID en batch_and_learn", os.getpid())
 
@@ -210,7 +207,6 @@ def train():
     print("Obs space shape:", micro_env.observation_space.shape)
     print("Action space shape:", micro_env.action_space.shape)"""
     sleep(30)
-    print("Buffers ocupados por:", buffers["actor"])
     #print("Getting batches!")
     """print("Antes del batch:")
     for key in buffers:
@@ -224,7 +220,11 @@ def train():
     print("batch_size:", batch["reward"].size()[-1])
     #print("Unroll size:", batch["reward"].size())"""
 
-    batch_and_learn(2, 2)
+    batch_and_learn(2, 640)
+
+
+    sleep(120)
+    print("TIME OUT!")
 
 
 def test():

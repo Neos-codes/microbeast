@@ -1,5 +1,5 @@
 import os
-from time import sleep
+from time import sleep, perf_counter
 import numpy as np
 import multiprocessing as mp
 import threading
@@ -43,7 +43,7 @@ def act(agent: Agent,                   # nn.Module
     env_output = envs.initial()
     agent_output, _ = agent.get_action(env_output)
      
-
+    envs_done = False
     # Actuar indefinidamente en el ambiente
     while True:
         # Mostrar tablero
@@ -51,6 +51,8 @@ def act(agent: Agent,                   # nn.Module
         # Obtener index de la free queue
         if free_queue.empty():
             #print(f"Continue por index ocupados en actor {a_id}")
+            print("free queue size:", free_queue.qsize())
+            print("full queue size:", full_queue.qsize())
             continue
 
 
@@ -93,17 +95,17 @@ def act(agent: Agent,                   # nn.Module
                 print(f"Actor {a_id} terminando antes")
                 # Se guardan en que step terminaron
                 buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][t+1, ...]
-                # Se reinicia el ambiente
-                env_output = envs.initial()
-                agent_output, _ =  agent.get_action(env_output)
+                envs_done = True
+                print("Envs end step:", buffers["ep_step"][index][0, ...])
                 break
 
         
-        # Si llegamos aqui, es porque no terminaron todos los ambientes
-        # Guardamos los ultimos pasos
-        buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][unroll_length, ...]
+        # Si entramos aqui, es porque algun ambiente no terminó
+        if not envs_done:
+            buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][unroll_length, ...]
+
         # Reiniciamos el ambiente
-        env_output = envs.initial()
+        env_output = envs.reset()
         agent_output, _ = agent.get_action(env_output)
 
         # Una vez llena la trayectoria, pasar a full queue
@@ -120,7 +122,7 @@ def train():
     n_envs = 2         # num envs per gym instance
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
     T = 80             # unroll_length
-    B = 2              # batch_size 
+    B = 4              # batch_size 
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
@@ -157,8 +159,8 @@ def train():
     # free_queue para indices de buffers disponibles para llenar
     # full_queue para indices de buffers con trayectorias para backpropagation
     ctx = mp.get_context("spawn")
-    free_queue = ctx.SimpleQueue()
-    full_queue = ctx.SimpleQueue()
+    free_queue = ctx.Queue()
+    full_queue = ctx.Queue()
     
     # ----- Llenar la free queue con los indices ----- #
     for index in range(n_buffers):
@@ -212,16 +214,20 @@ def train():
         while step < total_steps:
             
             print(f"Current updating step: {step}")
+            start = perf_counter()
 
             #Generar batches
             batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
+            print("Obtuve el batch")
            
             print(f"Learning thread {i}")
             PPO_learn(micro_model, micro_model, batch, advantages, micro_optimizer, B, n_envs)
 
             step += n_envs*B*T
+            end = perf_counter()
 
-        print("PID en batch_and_learn", os.getpid())
+            print(f"Update took {end - start}s")
+
 
 
         # END BATCH AND LEARN
@@ -243,10 +249,12 @@ def train():
     print("batch_size:", batch["reward"].size()[-1])
     #print("Unroll size:", batch["reward"].size())"""
 
-    batch_and_learn(2, 10000)
+    batch_and_learn(2, 100000000)
+
     
     """threads = []
     for i in range(n_learner_threads):
+        print("Max steps / n_threads:", max_steps // n_learner_threads)
         thread = threading.Thread(target=batch_and_learn, args=(i, max_steps // n_learner_threads,))
         thread.start()
         threads.append(thread)"""

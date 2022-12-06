@@ -20,7 +20,7 @@ class Env_Packer:
         self.n_envs = self.envs.num_envs
         self.ep_return = None    # Episode Return
         self.ep_step = None      # Episode Step
-        self.ep_done = None         # Episonde Done
+        self.ep_done = None      # Episonde Done
 
         self.a_id = a_id         # Actor id (Process id)
 
@@ -60,17 +60,13 @@ class Env_Packer:
         #ep_return = self.ep_return
         # --------
 
-        # if done, restart ep_return in that env
-        self.ep_return[0][np.where(done == True)] = 0
-        #self.ep_step[0][np.where(done == True)] = 0
-
         obs = _format_obs(obs)
         reward = torch.Tensor(reward).view(1, self.n_envs)
         done = done.astype("uint8")
 
         # Ver si algun ambiente termina
         if any(d == 1 for d in done) and self.a_id == 0:
-            print(f"{self.a_id} done:", done)
+            print(f"{self.a_id} done:", done, "en step:", self.ep_step)
 
         # Actualizar con mascara de done
         self.ep_done = np.where(done == 1, 1, self.ep_done)   # Mascara de ambientes done

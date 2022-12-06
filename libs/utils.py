@@ -148,18 +148,19 @@ def get_batch(
 
     #print("Gettin batch...\nBatch size:", batch_size)
 
-    # Lock full queue para extraer indices
+
+    # Iterar mientras se llena la full queue
+    while True:
+        if full_queue.qsize() < 4:
+            #print("full_queue size:", full_queue.qsize())
+            continue
+        else:
+            break
+
+    # Obtener indices de la full queue para actualizar
     with lock:
-
-        # Iterar mientras se llena la full queue
-        while True:
-            if full_queue.empty():
-                continue
-            else:
-                break
-
-        # Obtener indices de la full queue para actualizar
         indices = [full_queue.get() for _ in range(batch_size)]
+
 
     # Guardar las trayectorias obtenidas en un batch
     # Es una lista de stacks que contienen los steps almacenados en buffer
@@ -213,6 +214,7 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
     """ Performs a learning (optimization) step """
 
     ep_returns = []
+    mean_loss = []
     with lock:
         # Debo calcular la recompensa del ultimo step
         #learner_outputs, _ = learner_model.get_action(batch, agent_state=())
@@ -276,4 +278,6 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
 
                 actor_model.load_state_dict(learner_model.state_dict())
 
-                #print("Total loss:", loss.item())
+                mean_loss.append(loss.item())
+    
+    print("Mean loss:", np.array(mean_loss).mean())

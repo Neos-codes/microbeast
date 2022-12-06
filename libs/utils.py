@@ -81,7 +81,7 @@ def flatten_batch_and_advantages(batch: dict, advantages: torch.Tensor, shapes: 
 
     batch["done"] = batch["done"].reshape((1, -1)).float()
     batch["ep_return"] = batch["ep_return"].reshape((1, -1))
-    batch["ep_step"] = batch["ep_step"].reshape((1, -1))
+    batch["ep_step"] = batch["ep_step"].reshape((-1,))
     batch["policy_logits"] = batch["policy_logits"].reshape((1, -1,) + shapes["logits"][2:])
     batch["action_mask"] = batch["action_mask"].reshape((1, -1,) + shapes["action_mask"][2:])
     batch["baseline"] = batch["baseline"].reshape((1, -1))
@@ -102,6 +102,7 @@ def get_advantages(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
     """ Get a batch and return a tensor with advantages for all envs with shape (n_envs, unroll_length) """
 
     n_envs, unroll_length = batch["reward"].size()
+    # unroll_lenght = T+1 in this case, cause reward shape is T+1
 
     # Prepare advantages tensor
     advantages = torch.zeros((n_envs, unroll_length))
@@ -109,12 +110,13 @@ def get_advantages(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
     # Aliases
     reward = batch["reward"]
     value = batch["baseline"]
-    done = batch["done"]
+    done = batch["done"].type(torch.float32)
 
     # Ones to get result of multidimensional 1 - done
     ones = torch.ones((n_envs, 1))#.to(device)
 
 
+    # Actual calculo O(n²), puede mejorarse a O(n)
     with torch.no_grad():
         # Para cada paso de las trayectorias
         for t in range(unroll_length - 1):
@@ -144,10 +146,19 @@ def get_batch(
 
     """ Returns {batch_size} batches taken from the buffer and a tensor with advantages """
 
-    print("Gettin batch...\nBatch size:", batch_size)
+    #print("Gettin batch...\nBatch size:", batch_size)
 
     # Lock full queue para extraer indices
     with lock:
+
+        # Iterar mientras se llena la full queue
+        while True:
+            if full_queue.empty():
+                continue
+            else:
+                break
+
+        # Obtener indices de la full queue para actualizar
         indices = [full_queue.get() for _ in range(batch_size)]
 
     # Guardar las trayectorias obtenidas en un batch
@@ -182,6 +193,11 @@ def get_batch(
     batch["action"] = batch["action"].permute((1, 2, 0, 3)).reshape(shapes["action"])
     batch["last_action"] = batch["last_action"].permute((1, 2, 0, 3)).reshape(shapes["action"])
 
+    """print("In batch:")
+    for key in batch:
+        print(f"{key}:", batch[key].size()) """
+
+    batch["ep_step"] = batch["ep_step"][:, 0]
     # Obtenemos los valores de ventaja con las dimensiones actuales del batch
     advantages = get_advantages(batch, gamma)#, device)
 
@@ -196,24 +212,36 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
     
     """ Performs a learning (optimization) step """
 
-    print("PPO Learning!")
+    ep_returns = []
     with lock:
         # Debo calcular la recompensa del ultimo step
         #learner_outputs, _ = learner_model.get_action(batch, agent_state=())
-        # AQUI DEBERÍA IR EL PPO
+
         batch_size = batch["reward"].size()[-1]  # = n_envs*B*T
-        inds = np.arange(batch_size)  # arange of (n_envs*B*T)
+        unroll_length = batch_size // (B*n_envs)
+
+        inds = []
+        for i in range(0, batch_size, unroll_length):
+            inds += list(range(i, i+unroll_length-1))
+            ep_returns.append(batch["ep_return"][0][i+unroll_length-1])
+
+        #print("ep_returns:", ep_returns)
+        
+        # ahora batch_size solo cuenta los indices de trayectorias validas
+        batch_size = len(inds)
+        #inds = np.arange(batch_size)  # arange of (n_envs*B*T)
         
         # Por cada batch, actualizamos 4 veces
+        print("Updating...")
         for e in range(4):
-            print(f"Update {e}")
+            #print(f"Update {e}")
             # Desordenar indices para eliminar dependencia de estados y accion
             random.shuffle(inds) 
             minibatch_size = batch_size // 4
-            print("Batch size:", batch_size, "  mb_size:", minibatch_size)
+            #print("Batch size:", batch_size, "  mb_size:", minibatch_size)
             mb_update = 0
             for start in range(0, batch_size, minibatch_size):  # 4 = minibatch_size
-                print(f"Updating minibatch {mb_update}")
+                #print(f"Updating minibatch {mb_update}")
                 mb_update += 1
                 end = start + minibatch_size 
                 minibatch_ind = inds[start:end]
@@ -248,4 +276,4 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
 
                 actor_model.load_state_dict(learner_model.state_dict())
 
-                print("Total loss:", loss.item())
+                #print("Total loss:", loss.item())

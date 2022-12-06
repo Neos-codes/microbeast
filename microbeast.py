@@ -37,7 +37,9 @@ def act(agent: Agent,                   # nn.Module
 
     print(f"Hola! Soy el actor {a_id}")
     gym_envs = create_env(8, 2, 512)
-    envs = Env_Packer(gym_envs)
+    envs = Env_Packer(gym_envs, a_id)
+
+    # Obtener info del step 0
     env_output = envs.initial()
     agent_output, _ = agent.get_action(env_output)
      
@@ -53,7 +55,7 @@ def act(agent: Agent,                   # nn.Module
 
 
         index = free_queue.get() 
-        print(f"index in actor {a_id}: {index}")
+        #print(f"index in actor {a_id}: {index}")
 
 
         # ----- Guardar condiciones iniciales en el buffer ----- #
@@ -66,6 +68,7 @@ def act(agent: Agent,                   # nn.Module
             buffers[key][index][0, ...] = agent_output[key]
         
 
+        # Ahora obtener trayectoria desde t = 1 hasta t = T+1
         for t in range(unroll_length):
             envs.render()
             # Generar accion del agente
@@ -85,7 +88,23 @@ def act(agent: Agent,                   # nn.Module
             for key in agent_output:
                 buffers[key][index][t + 1 , ...] = agent_output[key]
 
-            
+            # Si todos los ambientes terminan antes de que los pasos maximos se completen
+            if torch.all(buffers["done"][index][t+1, ...] == True):
+                print(f"Actor {a_id} terminando antes")
+                # Se guardan en que step terminaron
+                buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][t+1, ...]
+                # Se reinicia el ambiente
+                env_output = envs.initial()
+                agent_output, _ =  agent.get_action(env_output)
+                break
+
+        
+        # Si llegamos aqui, es porque no terminaron todos los ambientes
+        # Guardamos los ultimos pasos
+        buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][unroll_length, ...]
+        # Reiniciamos el ambiente
+        env_output = envs.initial()
+        agent_output, _ = agent.get_action(env_output)
 
         # Una vez llena la trayectoria, pasar a full queue
         full_queue.put(index)
@@ -105,6 +124,7 @@ def train():
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
+    max_steps = 10000000
     train_device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Train device:", train_device)
 
@@ -191,11 +211,15 @@ def train():
 
         while step < total_steps:
             
+            print(f"Current updating step: {step}")
 
             #Generar batches
             batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
            
+            print(f"Learning thread {i}")
             PPO_learn(micro_model, micro_model, batch, advantages, micro_optimizer, B, n_envs)
+
+            step += n_envs*B*T
 
         print("PID en batch_and_learn", os.getpid())
 
@@ -206,7 +230,6 @@ def train():
     """print("Antes de dormir...")
     print("Obs space shape:", micro_env.observation_space.shape)
     print("Action space shape:", micro_env.action_space.shape)"""
-    sleep(30)
     #print("Getting batches!")
     """print("Antes del batch:")
     for key in buffers:
@@ -220,10 +243,16 @@ def train():
     print("batch_size:", batch["reward"].size()[-1])
     #print("Unroll size:", batch["reward"].size())"""
 
-    batch_and_learn(2, 640)
+    batch_and_learn(2, 10000)
+    
+    """threads = []
+    for i in range(n_learner_threads):
+        thread = threading.Thread(target=batch_and_learn, args=(i, max_steps // n_learner_threads,))
+        thread.start()
+        threads.append(thread)"""
 
-
-    sleep(120)
+    while True:
+        k = 0
     print("TIME OUT!")
 
 

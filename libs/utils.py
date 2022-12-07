@@ -96,6 +96,35 @@ def flatten_batch_and_advantages(batch: dict, advantages: torch.Tensor, shapes: 
     return batch, advantages
 
 
+def get_deltas(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
+
+    """ Get a batch and return a tensor with IMPALA discounted deltas """
+
+    n_envs, unroll_length = batch["reward"].size()
+    # unroll_length = T+1 in this case, cos reward shape is T+1
+
+    deltas = torch.zeros((n_envs, unroll_length))
+    
+    # Aliases
+    reward = batch["reward"]
+    value = batch["baseline"]
+    done = batch["done"].type(torch.float32)
+
+    # ones to get result of multidmensional (1 - done)
+    ones = torch.ones(n_envs, 1)
+
+    with torch.no_grad():
+        
+       for t in range(unroll_length - 1):
+            deltas[:, t:t+1] = reward[:, t:t+1] + gamma*value[:, t+1:t+2] * (ones - done[:, t:t+1]) - value[:, t:t+1]
+
+    print("GET_DELTAS: deltas size ->", deltas.size()) 
+    return deltas
+
+def get_ratio(batch: dict, learner_model: nn.Module, device="cpu"):
+    pass
+     
+
 
 def get_advantages(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
 
@@ -196,22 +225,26 @@ def get_batch(
 
     """print("In batch:")
     for key in batch:
-        print(f"{key}:", batch[key].size()) """
+        print(f"{key}:", batch[key].size())"""
 
     batch["ep_step"] = batch["ep_step"][:, 0]
     # Obtenemos los valores de ventaja con las dimensiones actuales del batch
-    advantages = get_advantages(batch, gamma)#, device)
+    #advantages = get_advantages(batch, gamma)#, device)
+    deltas = get_deltas(batch, gamma)
 
     # Luego estiramos todas las features
-    return flatten_batch_and_advantages(batch, advantages, shapes)  #dict, tensor 
+    #return flatten_batch_and_advantages(batch, advantages, shapes)  #dict, tensor 
+    return flatten_batch_and_advantages(batch, deltas, shapes)
 
 
 
 
 # TERMINAR ESTO!
-def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimizer, B: int, n_envs: int, lock=threading.Lock()):
+def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, advantages, optimizer, B: int, n_envs: int, lock=threading.Lock()):
     
     """ Performs a learning (optimization) step """
+
+    exp_name = exp_name + ".csv"
 
     ep_returns = []
     mean_loss = []
@@ -221,6 +254,31 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
 
         batch_size = batch["reward"].size()[-1]  # = n_envs*B*T
         unroll_length = batch_size // (B*n_envs)
+
+        print("obs shape:", batch["obs"].size())
+        inds = np.arange(batch_size)
+        learner_output = learner_model.get_action(batch, inds=inds, agent_state=())
+
+
+        new_logprobs = learner_output[0]["logprobs"]
+        old_logprobs = batch["logprobs"].view(-1)
+        ratio = (new_logprobs - old_logprobs).exp()   # learner_policy(pi) / actor_policy(mu)
+        p_i = torch.where(ratio < 1, ratio, 1).view((-1, unroll_length))   # min(p, ratio)
+
+        c_i = torch.zeros_like(p_i)
+        c_i[:, 0:1] = p_i[:, 0:1]
+        for t in range(1, unroll_length-1):
+            c_i[:, t:t+1] = p_i[:, t-1:t] * p_i[:, t:t+1]
+        
+        #print("pi:", p_i)
+        #print("ci:", c_i)
+        deltas = p_i * advantages.view((-1, unroll_length))
+
+        print("Baseline shape:", batch["baseline"].view((-1, unroll_length)).size())
+        baseline = batch["baseline"].view((-1, unroll_length))
+
+
+
 
         inds = []
         for i in range(0, batch_size, unroll_length):
@@ -281,3 +339,5 @@ def PPO_learn(actor_model: nn.Module, learner_model, batch, advantages, optimize
                 mean_loss.append(loss.item())
     
     print("Mean loss:", np.array(mean_loss).mean())
+    print("Mean episode return:", np.array(ep_returns).mean())
+    print("Ep steps:", np.array(batch["ep_step"]).mean())

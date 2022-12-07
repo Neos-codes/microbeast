@@ -50,13 +50,15 @@ def act(agent: Agent,                   # nn.Module
         envs.render()
         # Obtener index de la free queue
         if free_queue.empty():
-            #print(f"Continue por index ocupados en actor {a_id}")
-            print("free queue size:", free_queue.qsize())
-            print("full queue size:", full_queue.qsize())
+            #print("free queue size:", free_queue.qsize())
+            #print("full queue size:", full_queue.qsize())
             continue
 
 
         index = free_queue.get() 
+
+        if index is None:
+            break
         #print(f"index in actor {a_id}: {index}")
 
 
@@ -92,11 +94,9 @@ def act(agent: Agent,                   # nn.Module
 
             # Si todos los ambientes terminan antes de que los pasos maximos se completen
             if torch.all(buffers["done"][index][t+1, ...] == True):
-                print(f"Actor {a_id} terminando antes")
                 # Se guardan en que step terminaron
                 buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][t+1, ...]
                 envs_done = True
-                print("Envs end step:", buffers["ep_step"][index][0, ...])
                 break
 
         
@@ -114,7 +114,7 @@ def act(agent: Agent,                   # nn.Module
                  
 
 
-def train():
+def train(exp_name: str):
     print("Training...")
 
     # ----- temp ----- #
@@ -144,8 +144,7 @@ def train():
                   action=(n_envs*B, T+1,) + micro_env.action_space.shape,
                   logits=(n_envs*B, T+1,) + (sum(micro_model.nvec),),
                   action_mask=(n_envs*B, T+1,) + (sum(micro_model.nvec),),
-                  batch_envs=(n_envs*B, -1)
-                  )
+                  batch_envs=(n_envs*B, -1))
 
     #print("shapes:\n", shapes, shapes["obs"])
 
@@ -199,17 +198,12 @@ def train():
     # Definir funcion batch_and_learn()
     # Es dentro de la funcion para compartir variables globales
 
-    def batch_and_learn(i: int, total_steps: int, lock=threading.Lock()):
+    def batch_and_learn(i: int, total_steps: int, exp_name: str, lock=threading.Lock()):
         """ Get batches from buffer and backpropagates the info into NN model """
 
         nonlocal step  # Para referenciar la variable step de train()
         nonlocal gamma # Para referenciar el factor de descuento de train()
         nonlocal micro_env # Para referenciar un ambiente y sacar features
-        #nonlocal micro_learner 
-
-        
-        print("Step nonlocal:", step)
-        print("Gamma nonlocal:", gamma)
 
         while step < total_steps:
             
@@ -218,40 +212,23 @@ def train():
 
             #Generar batches
             batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
-            print("Obtuve el batch")
            
-            print(f"Learning thread {i}")
-            PPO_learn(micro_model, micro_model, batch, advantages, micro_optimizer, B, n_envs)
+            PPO_learn(micro_model, micro_model, exp_name, batch, advantages, micro_optimizer, B, n_envs)
 
             step += n_envs*B*T
             end = perf_counter()
 
-            print(f"Update took {end - start}s")
+            print(f"Update took {end - start}s\n-------")
 
 
 
         # END BATCH AND LEARN
 
-    # Proceso padre no puede terminar antes que los hijos o da error
-    """print("Antes de dormir...")
-    print("Obs space shape:", micro_env.observation_space.shape)
-    print("Action space shape:", micro_env.action_space.shape)"""
-    #print("Getting batches!")
-    """print("Antes del batch:")
-    for key in buffers:
-        print(key, "shape:", buffers[key][0].size())
-    batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
     
-    for key in batch:
-        print(key, "shape:", batch[key].size())
-
-    print("Advantages shape:", advantages.size())
-    print("batch_size:", batch["reward"].size()[-1])
-    #print("Unroll size:", batch["reward"].size())"""
-
-    batch_and_learn(2, 100000000)
+    batch_and_learn(2, 100000000, exp_name)
 
     
+    # Thread learners
     """threads = []
     for i in range(n_learner_threads):
         print("Max steps / n_threads:", max_steps // n_learner_threads)
@@ -272,7 +249,7 @@ def main():
     if args.test:
         test()
     else:
-        train()
+        train(args.exp_name)
 
 if __name__ == "__main__":
     main()

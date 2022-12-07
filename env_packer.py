@@ -64,13 +64,12 @@ class Env_Packer:
         reward = torch.Tensor(reward).view(1, self.n_envs)
         done = done.astype("uint8")
 
-        # Ver si algun ambiente termina
-        if any(d == 1 for d in done) and self.a_id == 0:
-            print(f"{self.a_id} done:", done, "en step:", self.ep_step)
 
         # Actualizar con mascara de done
         self.ep_done = np.where(done == 1, 1, self.ep_done)   # Mascara de ambientes done
+        # Actualizar pasos
         self.ep_step = torch.where(torch.from_numpy(self.ep_done) == 0, ep_step, self.ep_step)
+        # Actualizar retorno
         self.ep_return = torch.where(torch.from_numpy(self.ep_done) == 0, ep_return, self.ep_return)
 
 
@@ -78,8 +77,8 @@ class Env_Packer:
             #print("done:", done)
             #print("ep_done:", self.ep_done)
         # Ver si todos los ambientes terminaron al menos una vez
-        if np.all(self.ep_done == 1) and self.a_id == 0:
-            print("Todos los ambientes done!")
+        if np.all(self.ep_done == 1):
+            print(f"{self.a_id}: Todos los ambientes done!")
 
 
         done = torch.Tensor(self.ep_done).view(1, self.n_envs)  # Change  done -> self.ep_done

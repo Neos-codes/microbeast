@@ -20,7 +20,6 @@ os.environ["OMP_NUM_THREADS"] = "1"  # Para multitrheading
 #       los tensores entre procesos
 
 
-
 # Un Buffer será un diccionario con keys string y claves list(Tensor)
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
@@ -28,6 +27,7 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
 
 def act(agent: Agent,                   # nn.Module
+        n_envs: int,
         buffers: Buffers,               # Buffer dictionary
         a_id: int,                      # Agent id number
         free_queue: mp.SimpleQueue,     # Queue of free indexes from buffer
@@ -36,7 +36,7 @@ def act(agent: Agent,                   # nn.Module
         ):
 
     print(f"Hola! Soy el actor {a_id}")
-    gym_envs = create_env(8, 2, 512)
+    gym_envs = create_env(8, 1, 512)
     envs = Env_Packer(gym_envs, a_id)
 
     # Obtener info del step 0
@@ -119,9 +119,9 @@ def train(exp_name: str):
 
     # ----- temp ----- #
     n_actors = 4       # num of actors (subprocesses) training
-    n_envs = 2         # num envs per gym instance
+    n_envs = 1         # num envs per gym instance
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
-    T = 80             # unroll_length
+    T = 512             # unroll_length
     B = 4              # batch_size 
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
@@ -174,7 +174,7 @@ def train(exp_name: str):
         # Creamos proceso actor con el modelo recien creado
         actor = ctx.Process(
                     target=act,
-                    args=(micro_model, buffers, i, free_queue, full_queue, T)
+                    args=(micro_model, n_envs, buffers, i, free_queue, full_queue, T)
                 )
         actor.start()
 

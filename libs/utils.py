@@ -121,9 +121,12 @@ def get_deltas(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
     print("GET_DELTAS: deltas size ->", deltas.size()) 
     return deltas
 
-def get_ratio(batch: dict, learner_model: nn.Module, device="cpu"):
-    pass
-     
+def vtrace(batch: dict, device="cpu"):
+    
+    print("baseline batch size:", batch["baseline"].size())
+    print("ep steps:", batch["ep_step"])
+    n_envs, unroll_length = batch["reward"].size()
+#bootstrap_v = batch["baseline"]
 
 
 def get_advantages(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
@@ -227,15 +230,31 @@ def get_batch(
     for key in batch:
         print(f"{key}:", batch[key].size())"""
 
+    print("Done shape before flatten:", batch["done"].size())
+    print(batch["done"][0])
+
+    # Este arreglo tendrá solo los pasos dados por cada ambiente
     batch["ep_step"] = batch["ep_step"][:, 0]
+    print("kaka size:", batch["ep_step"].size()[0])
+    print("ep_step sum:", batch["ep_step"].sum())
+    
+    
+    batch["discounts"] = torch.arange(1, batch["ep_step"][0] + 1)
+    for i in range(1, batch["ep_step"].size()[0]):
+       batch["discounts"] = torch.cat((batch["discounts"], torch.arange(1, batch["ep_step"][i])))
+    batch["discounts"] = batch["discounts"]*0.99 
+
+
+    #print("Policy logits size:", batch["policy_logits"].size())
+
+
     # Obtenemos los valores de ventaja con las dimensiones actuales del batch
-    #advantages = get_advantages(batch, gamma)#, device)
-    deltas = get_deltas(batch, gamma)
+    advantages = get_advantages(batch, gamma)#, device)
+    #deltas = get_deltas(batch, gamma)
 
     # Luego estiramos todas las features
     #return flatten_batch_and_advantages(batch, advantages, shapes)  #dict, tensor 
-    return flatten_batch_and_advantages(batch, deltas, shapes)
-
+    return flatten_batch_and_advantages(batch, advantages, shapes)
 
 
 
@@ -255,35 +274,21 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, advan
         batch_size = batch["reward"].size()[-1]  # = n_envs*B*T
         unroll_length = batch_size // (B*n_envs)
 
-        print("obs shape:", batch["obs"].size())
+        """print("obs shape:", batch["obs"].size())
         inds = np.arange(batch_size)
-        learner_output = learner_model.get_action(batch, inds=inds, agent_state=())
-
-
-        new_logprobs = learner_output[0]["logprobs"]
-        old_logprobs = batch["logprobs"].view(-1)
-        ratio = (new_logprobs - old_logprobs).exp()   # learner_policy(pi) / actor_policy(mu)
-        p_i = torch.where(ratio < 1, ratio, 1).view((-1, unroll_length))   # min(p, ratio)
-
-        c_i = torch.zeros_like(p_i)
-        c_i[:, 0:1] = p_i[:, 0:1]
-        for t in range(1, unroll_length-1):
-            c_i[:, t:t+1] = p_i[:, t-1:t] * p_i[:, t:t+1]
-        
-        #print("pi:", p_i)
-        #print("ci:", c_i)
-        deltas = p_i * advantages.view((-1, unroll_length))
-
-        print("Baseline shape:", batch["baseline"].view((-1, unroll_length)).size())
-        baseline = batch["baseline"].view((-1, unroll_length))
-
-
-
+        learner_output = learner_model.get_action(batch, inds=inds, agent_state=())"""
 
         inds = []
+        count = 0
+        #print(batch["ep_step"])
+        # Esto trunca el batch contando los indices de los steps hasta el final
+        # de la primera partida de cada ambiente
+        print("ep step:", batch["ep_step"])
         for i in range(0, batch_size, unroll_length):
-            inds += list(range(i, i+unroll_length-1))
-            ep_returns.append(batch["ep_return"][0][i+unroll_length-1])
+            print(batch["ep_step"][count])
+            inds += list(range(i, i+batch["ep_step"][count]))
+            ep_returns.append(batch["ep_return"][0][i+batch["ep_step"][count]])
+            count += 1
 
         #print("ep_returns:", ep_returns)
         
@@ -291,53 +296,69 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, advan
         batch_size = len(inds)
         #inds = np.arange(batch_size)  # arange of (n_envs*B*T)
         
+
         # Por cada batch, actualizamos 4 veces
         print("Updating...")
         for e in range(4):
             #print(f"Update {e}")
-            # Desordenar indices para eliminar dependencia de estados y accion
-            random.shuffle(inds) 
-            minibatch_size = batch_size // 4
-            #print("Batch size:", batch_size, "  mb_size:", minibatch_size)
-            mb_update = 0
-            for start in range(0, batch_size, minibatch_size):  # 4 = minibatch_size
-                #print(f"Updating minibatch {mb_update}")
-                mb_update += 1
-                end = start + minibatch_size 
-                minibatch_ind = inds[start:end]
-                mb_advantages = advantages[minibatch_ind]
-                
-                learner_output =  learner_model.get_action(batch, inds=minibatch_ind, agent_state=())
+            
+            learner_output = learner_model.get_action(batch, inds=inds, agent_state=())
+            ratio = learner_output[0]["logprobs"] - batch["logprobs"][0, inds, ...]
 
 
-                new_logprobs = learner_output[0]["logprobs"]
-                old_logprobs = batch["logprobs"].view(-1)[minibatch_ind]
-                ratio = (new_logprobs - batch["logprobs"][0][minibatch_ind]).exp()
+            
 
-                # Loss
-                loss_1 = -mb_advantages*ratio
-                loss_2 = -mb_advantages * torch.clamp(ratio, 1 - 0.2, 1 + 0.2)
+            #print("learner logprob size:", learner_output[0]["logprobs"].size())
+            #print("batch logprob size:", batch["logprobs"][0, inds, ...].size())
+            #print("Ratio size:", ratio.size())
+            #clipped_ratio = 
+            with torch.no_grad():
+                ratio_exp = ratio.exp()
+                cs = torch.clamp(ratio_exp, max=1.0)
+                ratio_exp = torch.clamp(ratio_exp, max=1.0)
 
-                # Clip ratio
-                pg_loss = torch.max(loss_1, loss_2).mean()
-                entropy_loss = learner_output[0]["entropy"].mean()
+                deltas = ratio * (batch["reward"][0, inds] * batch["baseline"][0, inds] - batch["baseline"][0, inds])
+                print("deltas size:", deltas.size())
+                print("baseline size:", batch["baseline"][0, inds, ...].size())
 
-                # Critic loss
-                new_baselines = learner_output[0]["baseline"].flatten()
-                old_baselines = batch["baseline"][0][minibatch_ind]
-                critic_loss = ((new_baselines - old_baselines)**2).mean()
+                acc = torch.zeros(1)
+                result = []
+                count = 0
+                for i in range(batch["ep_step"].size()[0]):
+                    for t in range(count + batch["ep_step"][i] - 1, count-1, -1):
+                        acc = deltas[t] + batch["discounts"][t] * cs[t] * acc
+                        result.append(acc)
+                    count += batch["ep_step"][i] - 1
 
-                # Total loss
-                loss = pg_loss - 0.01 * entropy_loss + 0.5*critic_loss*0.5
+                result.reverse()
+                v_s_ = torch.tensor(result, dtype=torch.float32)
+                v_s = v_s_ + batch["baseline"][0, inds, ...]
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            pg_loss = ratio_exp * batch["logprobs"][0, inds, ...] * (batch["reward"][0, inds, ...] + batch["discounts"] * v_s - batch["baseline"][0, inds, ...])
 
-                actor_model.load_state_dict(learner_model.state_dict())
+            value_loss = v_s - batch["baseline"][0, inds, ...]
 
-                mean_loss.append(loss.item())
+            entropy_loss = torch.sum(batch["logprobs"][0, inds, ...] * batch["entropy"][0, inds, ...])
+
+
+
+                print("ratio new shape:", ratio.size())
+
+
+            # Total loss
+            loss = ratio.mean()*deltas.mean() 
+            print("loss:", loss)
+            #print("rewards shape:", batch["reward"].size())    #[0, inds]
+            #print("baseline shape:", batch["baseline"].size()) #[0, inds]
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            actor_model.load_state_dict(learner_model.state_dict())
+
+            #mean_loss.append(loss.item())
     
-    print("Mean loss:", np.array(mean_loss).mean())
-    print("Mean episode return:", np.array(ep_returns).mean())
+    print("Mean loss:", loss)
+    #print("Mean episode return:", np.array(ep_returns).mean())
     print("Ep steps:", np.array(batch["ep_step"]).mean())

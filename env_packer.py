@@ -33,7 +33,7 @@ class Env_Packer:
         self.ep_return = torch.zeros(1, self.n_envs)
         self.ep_step = torch.zeros(1, self.n_envs, dtype=torch.int32)
         self.ep_done = np.zeros((1, self.n_envs), dtype="uint8")
-        init_dones = torch.ones(1, self.n_envs, dtype=torch.uint8)
+        init_dones = torch.zeros(1, self.n_envs, dtype=torch.uint8)
         init_obs = _format_obs(self.envs.reset())
         init_action_mask = _format_action_masks(self.envs.get_action_mask().reshape(self.n_envs, -1))
 

@@ -1,4 +1,5 @@
 import os
+import csv
 from time import sleep, perf_counter
 import numpy as np
 import multiprocessing as mp
@@ -28,27 +29,33 @@ Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
 def act(agent: Agent,                   # nn.Module
         n_envs: int,
+        T: int,
         buffers: Buffers,               # Buffer dictionary
         a_id: int,                      # Agent id number
         free_queue: mp.SimpleQueue,     # Queue of free indexes from buffer
         full_queue: mp.SimpleQueue,     # Que of full indexes from buffer
         unroll_length: int,             # T, unroll_size, tamaño trayectoria  (see IMPALA paper)
+        exp_name: str
         ):
 
     print(f"Hola! Soy el actor {a_id}")
-    gym_envs = create_env(8, 1, 512)
-    envs = Env_Packer(gym_envs, a_id)
+    gym_envs = create_env(8, 1, T)
+    envs = Env_Packer(gym_envs, a_id, exp_name)
 
     # Obtener info del step 0
     env_output = envs.initial()
     agent_output, _ = agent.get_action(env_output)
+
+
+    # s0, a0
      
-    envs_done = False
+
     # Actuar indefinidamente en el ambiente
     while True:
         # Mostrar tablero
         envs.render()
-        # Obtener index de la free queue
+
+                # Obtener index de la free queue
         if free_queue.empty():
             #print("free queue size:", free_queue.qsize())
             #print("full queue size:", full_queue.qsize())
@@ -60,7 +67,6 @@ def act(agent: Agent,                   # nn.Module
         if index is None:
             break
         #print(f"index in actor {a_id}: {index}")
-
 
         # ----- Guardar condiciones iniciales en el buffer ----- #
         # Del ambiente
@@ -75,6 +81,7 @@ def act(agent: Agent,                   # nn.Module
         # Ahora obtener trayectoria desde t = 1 hasta t = T+1
         for t in range(unroll_length):
             envs.render()
+            
             # Generar accion del agente
             with torch.no_grad():
                 agent_output, _ = agent.get_action(env_output)
@@ -92,25 +99,10 @@ def act(agent: Agent,                   # nn.Module
             for key in agent_output:
                 buffers[key][index][t + 1 , ...] = agent_output[key]
 
-            # Si todos los ambientes terminan antes de que los pasos maximos se completen
-            if torch.all(buffers["done"][index][t+1, ...] == True):
-                # Se guardan en que step terminaron
-                buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][t+1, ...]
-                envs_done = True
-                break
-
-        
-        # Si entramos aqui, es porque algun ambiente no terminó
-        if not envs_done:
-            buffers["ep_step"][index][0, ...] = buffers["ep_step"][index][unroll_length, ...]
-
-        # Reiniciamos el ambiente
-        env_output = envs.reset()
-        agent_output, _ = agent.get_action(env_output)
+                    
 
         # Una vez llena la trayectoria, pasar a full queue
         full_queue.put(index)
-        # Para experimentar vuelvo a pasarlo a la free_queue
                  
 
 
@@ -118,17 +110,34 @@ def train(exp_name: str):
     print("Training...")
 
     # ----- temp ----- #
-    n_actors = 4       # num of actors (subprocesses) training
+    n_actors = 10       # num of actors (subprocesses) training
     n_envs = 1         # num envs per gym instance
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
     T = 512             # unroll_length
-    B = 4              # batch_size 
+    B = 2              # batch_size 
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
     n_buffers = max(2 * n_actors, B) # Como minimo, el doble de actores
     max_steps = 10000000
     train_device = "cuda" if torch.cuda.is_available() else "cpu"
+    if exp_name == "No_name":
+        exp_name = input("Nombre del experimento:")
+
+    print("Nombre oficial del experimento:", exp_name)
     print("Train device:", train_device)
+
+    # Crear csv para guardar retornos y steps
+    with open(exp_name + ".csv", "w") as data:
+        csv_w = csv.writer(data)
+        col_names = ["Return", "steps"]
+        csv_w.writerow(col_names)
+
+    # Crear csv para losses
+    with open(exp_name + "Losses.csv", "w") as data:
+        csv_w = csv.writer(data)
+        col_names = ["update", "pg_loss", "value_loss", "entropy_loss", "total_loss", "update time"]
+        csv_w.writerow(col_names)
+
 
     # Crear ambiente para obtener shapes
     micro_env = create_env(env_size, n_envs, 512) 
@@ -174,7 +183,7 @@ def train(exp_name: str):
         # Creamos proceso actor con el modelo recien creado
         actor = ctx.Process(
                     target=act,
-                    args=(micro_model, n_envs, buffers, i, free_queue, full_queue, T)
+                    args=(micro_model, n_envs, T, buffers, i, free_queue, full_queue, T, exp_name)
                 )
         actor.start()
 
@@ -195,15 +204,18 @@ def train(exp_name: str):
     # Step se comppartira entre threads, para contar cuantos steps llevamos
     # hasta alcanzar el maximo y terminar de entrenar
     step = 0
+    n_update = 0
     # Definir funcion batch_and_learn()
     # Es dentro de la funcion para compartir variables globales
 
-    def batch_and_learn(i: int, total_steps: int, exp_name: str, lock=threading.Lock()):
+    def batch_and_learn(i: int, total_steps: int, lock=threading.Lock()):
         """ Get batches from buffer and backpropagates the info into NN model """
 
         nonlocal step  # Para referenciar la variable step de train()
         nonlocal gamma # Para referenciar el factor de descuento de train()
         nonlocal micro_env # Para referenciar un ambiente y sacar features
+        nonlocal n_update
+        nonlocal exp_name
 
         while step < total_steps:
             
@@ -211,12 +223,23 @@ def train(exp_name: str):
             start = perf_counter()
 
             #Generar batches
-            batch, advantages = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
+            batch = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
            
-            PPO_learn(micro_model, micro_model, exp_name, batch, advantages, micro_optimizer, B, n_envs)
+            losses = PPO_learn(micro_model, micro_model, exp_name, batch, micro_optimizer, B, n_envs)
 
             step += n_envs*B*T
             end = perf_counter()
+
+            with open(exp_name + "Losses.csv", "a") as data:
+                csv_w = csv.writer(data)
+                loss = [n_update,]
+                losses.extend([end_start])
+                loss.extend(losses)
+                print("Loss list:", loss)
+                csv.writerow(loss)
+
+
+            n_update += 1
 
             print(f"Update took {end - start}s\n-------")
 

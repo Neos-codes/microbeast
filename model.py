@@ -149,26 +149,26 @@ class Agent(nn.Module):
         print(next(self.network.parameters()).device)
 
     # Lo de agent state es para satisfacer MicroBeast (MonoBeast)
-    def forward(self, input_dict: dict, agent_state, inds=[]):
+    def forward(self, input_dict: dict, agent_state, learning=False, inds=[]):
         #print("---  OBS SIZE ---\n", input_dict["obs"][0, 0, ...].size())
 
             # Si no se dan los indices, entonces se está haciendo un step en el ambiente
-        if len(inds) == 0:
+        if not learning:
             return self.network(input_dict["obs"][0, 0, ...].permute((0, 3, 1, 2)))
 
         # Si se dan los indices, estamos actualizando
-        return self.network(input_dict["obs"][0, inds, ...].permute((0, 3, 1, 2)))
+        return self.network(input_dict["obs"].permute((0, 3, 1, 2)))
 
 
 
     # Get action ahora recibe un diccionario en lugar de solo las observaciones!
-    def get_action(self, input_dict: dict, inds=[], agent_state=()):
+    def get_action(self, input_dict: dict, learning=False, inds=[], agent_state=()):
         # Siempre entra x (obs) de shape [n_envs, h, w, 27]
-        logits = self.actor(self.forward(input_dict, agent_state, inds))    # [n_envs, 78hw]
+        logits = self.actor(self.forward(input_dict, agent_state, learning, inds))    # [n_envs, 78hw]
         split_logits = torch.split(logits, self.nvec, dim=1)   #  (24, 7 * hw)   (7 actions * grid_size)  7 * 64 = 448
 
         # Si no se dan los indices del batch, se ejecutan los steps en el ambiente
-        if len(inds) == 0:
+        if not learning:
             #print("Action mask dim:", input_dict["action_mask"][0, ...].shape)
             action_mask = input_dict["action_mask"][0, ...]  # shape (n_envs, 78hw)
 
@@ -180,14 +180,12 @@ class Agent(nn.Module):
         else:
             # Obtener acciones de los indices obtenidos
             a_dims = input_dict["action"].size()
-            action = input_dict["action"].view(a_dims[1], a_dims[2])                
+            action = input_dict["action"]                
 
             # T para calzar con action mask [n_envs, 7hw] -> [7hw, n_envs]
-            action = action[inds].transpose(1, 0)
+            action = action.transpose(1, 0)
 
-
-            #print("Action mask size en update:", input_dict["action_mask"][0, inds, ...].size())
-            action_mask = input_dict["action_mask"][0, inds, ...]    # [num_envs, 4992]
+            action_mask = input_dict["action_mask"]    # [num_envs, 4992]
             split_action_mask = torch.split(action_mask, self.nvec, dim=1)
             multi_categoricals = [CategoricalMasked(logits=logits, masks=iam) for (logits, iam) in zip(split_logits, split_action_mask)]
 
@@ -201,32 +199,25 @@ class Agent(nn.Module):
         logprob = logprob.T.view(-1, num_predicted_parameters)
         entropy = entropy.T.view(-1, num_predicted_parameters)
         action = action.T.view(-1, num_predicted_parameters)
-        #print("nvec.sum:", self.envs.action_space.nvec.sum())
         action_mask = action_mask.view(-1, sum(self.nvec))
-        #print("action mask shape:", action_mask.size())
-        #print("action size:", action.size())  # same num_predicted_par 448
-
-        #print("entropy shape:", entropy.sum(1).size())
-        #print("logprob of this action:", logprob.sum(1))    # logprob.sum(1).sum()
-
 
         # ahora obtenemos el valor dentro de get_action
-        baseline = self.get_value(input_dict, (), inds).view(1, -1)
+        baseline = self.get_value(input_dict, (), learning, inds).view(1, -1)
 
 
-        if len(inds) == 0:
+        if not learning:
             output = (dict(action=action, policy_logits=logits, 
             logprobs=logprob.sum(1), baseline=baseline), ()) 
 
         else:
             output = (dict(action=action, policy_logits=logits, 
-            logprobs=logprob.sum(1), baseline=baseline, entropy=entropy), ()) 
+            logprobs=logprob.sum(1), baseline=baseline, entropy=entropy.sum(1)), ()) 
 
         return output
     
 
-    def get_value(self, input_dict: dict, agent_state=(), inds=[]) -> torch.Tensor:
-        return self.critic(self.forward(input_dict, agent_state, inds=inds))
+    def get_value(self, input_dict: dict, agent_state=(), learning=False, inds=[]) -> torch.Tensor:
+        return self.critic(self.forward(input_dict, agent_state, learning, inds=inds))
 
 
 

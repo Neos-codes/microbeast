@@ -64,11 +64,11 @@ class Env_Packer:
 
 
         if done[0]:
+            with open(self.exp_name + ".csv", "a") as data:
+                csv_w = csv.writer(data)
+                csv_w.writerow([self.ep_return.view((-1)).item(), self.ep_step.view((-1)).item()])
             self.ep_return = torch.zeros(1, self.n_envs)
             self.ep_step = torch.zeros(1, self.n_envs)
-            with open(exp_name + ".csv", "a") as data:
-                csv_w = csv.writer(data)
-                csv_w.writerow([self.ep_return.view((-1)), self.ep_step.view((-1))])
 
         obs = _format_obs(obs)
         reward = torch.Tensor(reward).view(1, self.n_envs)

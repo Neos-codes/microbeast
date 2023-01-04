@@ -233,10 +233,10 @@ def train(exp_name: str):
             with open(exp_name + "Losses.csv", "a") as data:
                 csv_w = csv.writer(data)
                 loss = [n_update,]
-                losses.extend([end_start])
+                losses.extend([end-start])
                 loss.extend(losses)
                 print("Loss list:", loss)
-                csv.writerow(loss)
+                csv_w.writerow(loss)
 
 
             n_update += 1

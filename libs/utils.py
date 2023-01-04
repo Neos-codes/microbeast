@@ -302,4 +302,4 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
 
         print("loss:", total_loss)
 
-        return [pg_loss, value_loss, entropy_loss, total_loss]
+        return [pg_loss.item(), value_loss.item(), entropy_loss.item(), total_loss.item()]

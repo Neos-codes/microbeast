@@ -194,9 +194,11 @@ def get_batch(
     }
 
     # dims [T, n_envs, ...] -> [T*n_envs, ...]
+    print("GET_BATCH -> Keys in batch:")
     for key in batch:
         last_dims = tuple(batch[key].size()[3:])
         batch[key] = batch[key].reshape((-1,)+last_dims)
+        print(f"{key}: {batch[key].size()}")
     
 
     # Liberar indices obtenidos de la full queue en la free queue
@@ -213,7 +215,7 @@ def get_batch(
 
 
 # TERMINAR ESTO!
-def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optimizer, B: int, n_envs: int, lock=threading.Lock()):
+def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optimizer, B: int, T: int, n_envs: int, lock=threading.Lock()):
     
     """ Performs a learning (optimization) step """
 
@@ -229,13 +231,38 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
         # dims [1, ...] -> [...]
         learner_outputs["baseline"] = learner_outputs["baseline"].flatten()
 
-        bootstrap_value = learner_outputs["baseline"][-1:]
+        # Devolver dimensiones a [B, T, ...]
+        print("\nReshaping learner outputs:")
+        for key in learner_outputs:
+            key_dims = learner_outputs[key].size()
+            learner_outputs[key] = learner_outputs[key].reshape((B, T+1,) + key_dims[1:])
+            print(f"{key}: {learner_outputs[key].size()}")
+
+        print("\nReshaping batch:")
+        for key in batch:
+            key_dims = batch[key].size()
+            batch[key] = batch[key].reshape((B, T+1) + key_dims[1:])
+            print(f"{key}: {batch[key].size()}")
+
+
+        # Obtener Bootstrap values
+        bootstrap_value = learner_outputs["baseline"][:, -1]
+        print("Bootstrap value:", bootstrap_value)
 
         # Move obs[t] -> action[t] to action[t] -> obs[t]
         # Quitar primer elemento del batch
-        batch = {key: tensor[1:] for key, tensor in batch.items()}
+        batch = {key: tensor[:, 1:] for key, tensor in batch.items()}
         # Quitar ultimo elemento del batch
-        learner_outputs = {key: tensor[:-1] for key, tensor in learner_outputs.items()}
+        learner_outputs = {key: tensor[:, :-1] for key, tensor in learner_outputs.items()}
+
+        print("\n\nQuitando el primer elemento en el batch:")
+        for key in batch:
+            print(f"{key}: {batch[key].size()}")
+
+        print("\n\nQuitando el ultimo elemento del learner output")
+        for key in learner_outputs:
+            print(f"{key}: {learner_outputs[key].size()}")
+
 
 
         discounts = (~batch["done"]).float() * 0.99  # gamma = 0.99
@@ -247,34 +274,41 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
         rewards = batch["reward"] 
 
         ratio = new_logprobs - old_logprobs
+        print(f"\n\nRatio shape: {ratio.size()}")
 
         # --- Importance Weights
         with torch.no_grad():
             ratio_exp = ratio.exp()
             
-            # rho -> Greek letter "p"    rhos in plural
+            # rho -> Greek letter "p"    rhos in plural   (see paper)
             rhos = torch.clamp(ratio_exp, max=1.0)
             cs = torch.clamp(ratio_exp, max=1.0)
             
-            values_t_plus_one = torch.cat([values[1:], bootstrap_value])
+            print("Values[:, 1:] ->", values[:, 1:].size())
+            print("Bootstrap value ->", bootstrap_value.view((B, 1)).size())
+            values_t_plus_one = torch.cat([values[:, 1:], bootstrap_value.view((B, 1))], dim=1)
+            print("values_t_plus_one ->", values_t_plus_one.size())
 
             deltas = rhos * (rewards + discounts * values_t_plus_one - values)
+            print("\nDeltas shape:", deltas.size())
 
-            acc = torch.zeros_like(bootstrap_value)
+            acc = torch.zeros((B,))
             result = []
-            for t in range(discounts.shape[0] - 1, -1, -1):
-                acc = deltas[t] + discounts[t] * cs[t] * acc
+            for t in range(discounts.shape[1] - 1, -1, -1):    # <-- Problem here!
+                acc = deltas[:, t] + discounts[:, t] * cs[:, t] * acc    # <-- HERE DIES
                 result.append(acc)
 
             result.reverse()
-            vs_minus_v_xs = torch.tensor(result)
+            vs_minus_v_xs = torch.stack(result).transpose(1, 0)
+            print("\nvs_minus_v_xs shape:", vs_minus_v_xs.size())
+            print("values shape:", values.size())
 
             # Sumar V(xs) para tener v_s
             vs = vs_minus_v_xs + values
             
             # Advantage for policy gradients
-            broadcasted_bootstrap_values = torch.ones_like(vs[0]) * bootstrap_value
-            vs_t_plus_1 = torch.cat([vs[1:], broadcasted_bootstrap_values])
+            broadcasted_bootstrap_values = torch.ones_like(vs[:, 0]) * bootstrap_value
+            vs_t_plus_1 = torch.cat([vs[:, 1:], broadcasted_bootstrap_values.view((B, 1))], dim=1)
 
             clipped_pg_rhos = torch.clamp(rhos, max=1.0)
 

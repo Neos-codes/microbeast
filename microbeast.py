@@ -53,7 +53,7 @@ def act(agent: Agent,                   # nn.Module
     # Actuar indefinidamente en el ambiente
     while True:
         # Mostrar tablero
-        envs.render()
+        #envs.render()
 
                 # Obtener index de la free queue
         if free_queue.empty():
@@ -80,7 +80,7 @@ def act(agent: Agent,                   # nn.Module
 
         # Ahora obtener trayectoria desde t = 1 hasta t = T+1
         for t in range(unroll_length):
-            envs.render()
+            #envs.render()
             
             # Generar accion del agente
             with torch.no_grad():
@@ -225,7 +225,7 @@ def train(exp_name: str):
             #Generar batches
             batch = get_batch(B, shapes, gamma, train_device, free_queue, full_queue, buffers)
            
-            losses = PPO_learn(micro_model, micro_model, exp_name, batch, micro_optimizer, B, n_envs)
+            losses = PPO_learn(micro_model, micro_model, exp_name, batch, micro_optimizer, B, T, n_envs)
 
             step += n_envs*B*T
             end = perf_counter()

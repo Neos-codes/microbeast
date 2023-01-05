@@ -284,13 +284,9 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
             rhos = torch.clamp(ratio_exp, max=1.0)
             cs = torch.clamp(ratio_exp, max=1.0)
             
-            print("Values[:, 1:] ->", values[:, 1:].size())
-            print("Bootstrap value ->", bootstrap_value.view((B, 1)).size())
             values_t_plus_one = torch.cat([values[:, 1:], bootstrap_value.view((B, 1))], dim=1)
-            print("values_t_plus_one ->", values_t_plus_one.size())
 
             deltas = rhos * (rewards + discounts * values_t_plus_one - values)
-            print("\nDeltas shape:", deltas.size())
 
             acc = torch.zeros((B,))
             result = []
@@ -300,8 +296,6 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
 
             result.reverse()
             vs_minus_v_xs = torch.stack(result).transpose(1, 0)
-            print("\nvs_minus_v_xs shape:", vs_minus_v_xs.size())
-            print("values shape:", values.size())
 
             # Sumar V(xs) para tener v_s
             vs = vs_minus_v_xs + values

@@ -39,7 +39,7 @@ def act(agent: Agent,                   # nn.Module
         ):
 
     print(f"Hola! Soy el actor {a_id}")
-    gym_envs = create_env(8, 1, T)
+    gym_envs = create_env(8, n_envs, 2000)
     envs = Env_Packer(gym_envs, a_id, exp_name)
 
     # Obtener info del step 0
@@ -111,9 +111,9 @@ def train(exp_name: str):
 
     # ----- temp ----- #
     n_actors = 10       # num of actors (subprocesses) training
-    n_envs = 1         # num envs per gym instance
+    n_envs = 6         # num envs per gym instance
     env_size = 8       # options: [8, 10]  grid size: (8x8), (10x10)
-    T = 512             # unroll_length
+    T = 64             # unroll_length
     B = 2              # batch_size 
     gamma = 0.99       # Discount factor
     n_learner_threads = 2   # Cuantos threads learners tendremos
@@ -140,7 +140,7 @@ def train(exp_name: str):
 
 
     # Crear ambiente para obtener shapes
-    micro_env = create_env(env_size, n_envs, 512) 
+    micro_env = create_env(env_size, n_envs, 2000) 
     obs_space_shape = micro_env.observation_space.shape
     nvec = micro_env.action_space.nvec.tolist()
     micro_model = Agent(micro_env.observation_space.shape, nvec, env_size**2)

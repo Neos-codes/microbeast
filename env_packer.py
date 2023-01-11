@@ -32,8 +32,9 @@ class Env_Packer:
         env_h = self.envs.height    # Height of grid
         init_reward = torch.zeros(1, self.n_envs)
         init_last_action = torch.zeros(1, self.n_envs, 7*(env_h**2), dtype=torch.int64)
-        self.ep_return = torch.zeros(1, self.n_envs)
-        self.ep_step = torch.zeros(1, self.n_envs, dtype=torch.int32)
+        self.ep_return = torch.zeros(1, self.n_envs, dtype=torch.uint8)
+
+        self.ep_step = torch.zeros(1, self.n_envs, dtype=torch.uint8)
         init_dones = torch.zeros(1, self.n_envs, dtype=torch.uint8)
         init_obs = _format_obs(self.envs.reset())
         init_action_mask = _format_action_masks(self.envs.get_action_mask().reshape(self.n_envs, -1))
@@ -62,13 +63,16 @@ class Env_Packer:
         ep_return = self.ep_return
 
 
+        real_dones = np.where(done == True)[0]
+            #print("real_dones:", real_dones)
 
-        if done[0]:
+        if any(e == True for e in done):
             with open(self.exp_name + ".csv", "a") as data:
                 csv_w = csv.writer(data)
-                csv_w.writerow([self.ep_return.view((-1)).item(), self.ep_step.view((-1)).item()])
-            self.ep_return = torch.zeros(1, self.n_envs)
-            self.ep_step = torch.zeros(1, self.n_envs)
+                for i in real_dones:
+                    csv_w.writerow([self.ep_return.view((-1))[i].item(), self.ep_step.view((-1))[i].item(), i])
+                    self.ep_step[0][i] = 0
+                    self.ep_return[0][i] = 0
 
         obs = _format_obs(obs)
         reward = torch.Tensor(reward).view(1, self.n_envs)

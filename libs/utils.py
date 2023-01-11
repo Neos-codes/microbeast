@@ -59,12 +59,17 @@ def create_buffers(n_buffers: int, n_envs: int, B: int, T: int, obs_size: tuple)
 def create_env(size: int, n_envs: int, max_steps: int) -> MicroRTSGridModeVecEnv:
     """ Returns a gym-MicroRTS env of (size x size) and \"n_envs\" bots simultaneously"""
     print("Creando ambiente gym-MicroRTS...")
+    print("n_envs:", n_envs)
+
     envs = MicroRTSGridModeVecEnv(
             num_selfplay_envs=0,
             num_bot_envs=n_envs,
             max_steps=max_steps,
             render_theme=2,
-            ai2s=[microrts_ai.coacAI for _ in range(n_envs)],
+            ai2s=[microrts_ai.coacAI for _ in range(3)] +
+                  [microrts_ai.randomBiasedAI for _ in range(1)] + 
+                  [microrts_ai.lightRushAI for _ in range(1)] +
+                  [microrts_ai.workerRushAI for _ in range(1)],
             map_paths=[f'maps/{size}x{size}/basesWorkers{size}x{size}.xml'],
             reward_weight=np.array([10.0, 1.0, 1.0, 0.2, 1.0, 4.0]),
             )
@@ -118,7 +123,7 @@ def get_deltas(batch: dict, gamma: float, device="cpu") -> torch.Tensor:
        for t in range(unroll_length - 1):
             deltas[:, t:t+1] = reward[:, t:t+1] + gamma*value[:, t+1:t+2] * (ones - done[:, t:t+1]) - value[:, t:t+1]
 
-    print("GET_DELTAS: deltas size ->", deltas.size()) 
+    #print("GET_DELTAS: deltas size ->", deltas.size()) 
     return deltas
 
 
@@ -194,11 +199,11 @@ def get_batch(
     }
 
     # dims [T, n_envs, ...] -> [T*n_envs, ...]
-    print("GET_BATCH -> Keys in batch:")
+    #print("GET_BATCH -> Keys in batch:")
     for key in batch:
         last_dims = tuple(batch[key].size()[3:])
         batch[key] = batch[key].reshape((-1,)+last_dims)
-        print(f"{key}: {batch[key].size()}")
+        #print(f"{key}: {batch[key].size()}")
     
 
     # Liberar indices obtenidos de la full queue en la free queue
@@ -228,26 +233,30 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
         # Usar los ep steps para meter las observaciones al learner
         learner_outputs, _ = learner_model.get_action(batch, learning=True, inds=[], agent_state=())
 
-        # dims [1, ...] -> [...]
+        # Flatten dims [1, ...] -> [...]
         learner_outputs["baseline"] = learner_outputs["baseline"].flatten()
 
+
+        # ----- RESHAPING LEARNER OUTPUTS ----- #
         # Devolver dimensiones a [B, T, ...]
-        print("\nReshaping learner outputs:")
+        #print("\nReshaping learner outputs:")
         for key in learner_outputs:
             key_dims = learner_outputs[key].size()
-            learner_outputs[key] = learner_outputs[key].reshape((B, T+1,) + key_dims[1:])
-            print(f"{key}: {learner_outputs[key].size()}")
+            learner_outputs[key] = learner_outputs[key].reshape((B*n_envs, T+1,) + key_dims[1:])
+            #print(f"{key}: {learner_outputs[key].size()}")
 
-        print("\nReshaping batch:")
+
+# ----- RESHAPING BATCH ----- #
+        #print("\nReshaping batch:")
         for key in batch:
             key_dims = batch[key].size()
-            batch[key] = batch[key].reshape((B, T+1) + key_dims[1:])
-            print(f"{key}: {batch[key].size()}")
+            batch[key] = batch[key].reshape((B*n_envs, T+1) + key_dims[1:])
+            #print(f"{key}: {batch[key].size()}")
 
 
         # Obtener Bootstrap values
         bootstrap_value = learner_outputs["baseline"][:, -1]
-        print("Bootstrap value:", bootstrap_value)
+
 
         # Move obs[t] -> action[t] to action[t] -> obs[t]
         # Quitar primer elemento del batch
@@ -255,28 +264,28 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
         # Quitar ultimo elemento del batch
         learner_outputs = {key: tensor[:, :-1] for key, tensor in learner_outputs.items()}
 
-        print("\n\nQuitando el primer elemento en el batch:")
+        """print("\n\nQuitando el primer elemento en el batch:")
         for key in batch:
             print(f"{key}: {batch[key].size()}")
 
         print("\n\nQuitando el ultimo elemento del learner output")
         for key in learner_outputs:
-            print(f"{key}: {learner_outputs[key].size()}")
+            print(f"{key}: {learner_outputs[key].size()}")"""
 
 
 
         discounts = (~batch["done"]).float() * 0.99  # gamma = 0.99
 
-        # VTrace
+        # ----- VTrace ----- #
         old_logprobs = batch["logprobs"]
         new_logprobs = learner_outputs["logprobs"]
         values = learner_outputs["baseline"]
         rewards = batch["reward"] 
 
         ratio = new_logprobs - old_logprobs
-        print(f"\n\nRatio shape: {ratio.size()}")
+        #print(f"\n\nRatio shape: {ratio.size()}")
 
-        # --- Importance Weights
+        # ----- IMPORTANCE WEIGHTS ----- #
         with torch.no_grad():
             ratio_exp = ratio.exp()
             
@@ -284,14 +293,14 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
             rhos = torch.clamp(ratio_exp, max=1.0)
             cs = torch.clamp(ratio_exp, max=1.0)
             
-            values_t_plus_one = torch.cat([values[:, 1:], bootstrap_value.view((B, 1))], dim=1)
+            values_t_plus_one = torch.cat([values[:, 1:], bootstrap_value.view((B*n_envs, 1))], dim=1)
 
             deltas = rhos * (rewards + discounts * values_t_plus_one - values)
 
-            acc = torch.zeros((B,))
+            acc = torch.zeros((B*n_envs,))
             result = []
-            for t in range(discounts.shape[1] - 1, -1, -1):    # <-- Problem here!
-                acc = deltas[:, t] + discounts[:, t] * cs[:, t] * acc    # <-- HERE DIES
+            for t in range(discounts.shape[1] - 1, -1, -1):
+                acc = deltas[:, t] + discounts[:, t] * cs[:, t] * acc
                 result.append(acc)
 
             result.reverse()
@@ -302,7 +311,7 @@ def PPO_learn(actor_model: nn.Module, learner_model, exp_name: str, batch, optim
             
             # Advantage for policy gradients
             broadcasted_bootstrap_values = torch.ones_like(vs[:, 0]) * bootstrap_value
-            vs_t_plus_1 = torch.cat([vs[:, 1:], broadcasted_bootstrap_values.view((B, 1))], dim=1)
+            vs_t_plus_1 = torch.cat([vs[:, 1:], broadcasted_bootstrap_values.view((B*n_envs, 1))], dim=1)
 
             clipped_pg_rhos = torch.clamp(rhos, max=1.0)
 
